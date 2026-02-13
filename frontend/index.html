@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PathLearn AI - 대화 경로 학습 플랫폼</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">PL</div>
+      <div class="brand-text">
+        <strong>PathLearn AI</strong>
+        <span>Conversation Navigation Studio</span>
+      </div>
+    </div>
+    <nav class="top-actions">
+      <button id="openLoginBtn" class="btn btn-ghost">로그인</button>
+      <button id="openSignupBtn" class="btn btn-primary">회원가입</button>
+      <button id="logoutBtn" class="btn btn-ghost hidden">로그아웃</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="landingView" class="landing">
+      <div class="hero-card glass">
+        <p class="badge">AI Learning Flow Workspace</p>
+        <h1>선형 채팅을 넘어,<br />대화를 <em>지식 경로</em>로 관리하세요.</h1>
+        <p class="hero-copy">
+          PathLearn AI는 질문-답변을 자동으로 트리 구조화하여 학습의 흐름을 추적합니다.
+          과거 노드에서 분기하고, 맥락 이탈 알림으로 학습 목표를 유지하세요.
+        </p>
+        <div class="hero-cta">
+          <button id="heroStartBtn" class="btn btn-primary btn-lg">시작하기</button>
+          <button id="heroDemoBtn" class="btn btn-outline btn-lg">데모 살펴보기</button>
+        </div>
+      </div>
+
+      <div class="feature-grid">
+        <article class="glass feature">
+          <h3>실시간 트리 시각화</h3>
+          <p>대화마다 핵심 키워드 노드를 생성하고 경로를 즉시 확인할 수 있습니다.</p>
+        </article>
+        <article class="glass feature">
+          <h3>맥락 회귀 & 분기</h3>
+          <p>과거 답변 시점으로 돌아가 새로운 질문 줄기를 독립적으로 확장합니다.</p>
+        </article>
+        <article class="glass feature">
+          <h3>학습 이탈 알림</h3>
+          <p>깊이/유사도 기반으로 학습 목표 이탈 가능성을 감지해 집중을 돕습니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="authView" class="auth hidden">
+      <div class="auth-card glass">
+        <div class="auth-tabs">
+          <button id="tabLogin" class="tab active">로그인</button>
+          <button id="tabSignup" class="tab">회원가입</button>
+        </div>
+
+        <form id="loginForm" class="form active" autocomplete="on">
+          <h2>다시 오신 것을 환영합니다</h2>
+          <label>
+            아이디
+            <input type="text" name="username" placeholder="아이디 입력" required />
+          </label>
+          <label>
+            비밀번호
+            <input type="password" name="password" placeholder="비밀번호 입력" required />
+          </label>
+          <button type="submit" class="btn btn-primary">로그인</button>
+        </form>
+
+        <form id="signupForm" class="form" autocomplete="on">
+          <h2>계정 만들기</h2>
+          <label>
+            아이디
+            <input type="text" name="username" minlength="4" placeholder="4자 이상" required />
+          </label>
+          <label>
+            표시 이름
+            <input type="text" name="displayName" placeholder="화면에 표시될 이름" required />
+          </label>
+          <label>
+            비밀번호
+            <input type="password" name="password" minlength="8" placeholder="8자 이상" required />
+          </label>
+          <label>
+            비밀번호 확인
+            <input type="password" name="confirmPassword" minlength="8" placeholder="비밀번호 재입력" required />
+          </label>
+          <button type="submit" class="btn btn-primary">회원가입</button>
+        </form>
+
+        <p id="authMsg" class="message"></p>
+      </div>
+    </section>
+
+    <section id="appView" class="app hidden">
+      <aside class="panel tree-panel glass">
+        <div class="panel-head">
+          <h3>대화 경로 트리</h3>
+          <span id="nodeCount" class="counter">0 Nodes</span>
+        </div>
+        <div id="treeRoot" class="tree-root"></div>
+      </aside>
+
+      <section class="panel chat-panel glass">
+        <div class="panel-head">
+          <h3>대화 창</h3>
+          <span id="branchTag" class="counter">Root Branch</span>
+        </div>
+        <div id="chatFeed" class="chat-feed"></div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" type="text" placeholder="질문을 입력하면 현재 선택 노드에서 분기됩니다." required />
+          <button type="submit" class="btn btn-primary">전송</button>
+        </form>
+      </section>
+
+      <aside class="panel insight-panel glass">
+        <div class="panel-head">
+          <h3>학습 인사이트</h3>
+        </div>
+
+        <div class="insight-block">
+          <h4>선택 노드</h4>
+          <p id="selectedNodeTitle">루트 노드</p>
+          <p id="selectedNodeMeta" class="muted">Depth 0 · 시작점</p>
+        </div>
+
+        <div class="insight-block">
+          <h4>경로 상태</h4>
+          <div class="progress-wrap">
+            <div id="depthBar" class="progress-bar"></div>
+          </div>
+          <p id="driftAlert" class="alert">정상 범위: 학습 경로가 안정적으로 유지되고 있습니다.</p>
+        </div>
+
+        <div class="insight-block">
+          <h4>사용 안내</h4>
+          <ul>
+            <li>트리 노드를 클릭하면 해당 시점으로 이동합니다.</li>
+            <li>과거 노드 선택 후 질문 시 새 분기가 생성됩니다.</li>
+            <li>깊이가 깊어지면 이탈 알림이 표시됩니다.</li>
+          </ul>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
