@@ -8,6 +8,14 @@ import lombok.*;
 @Table(name = "users")
 public class User {
 
+    public void changeNickname(String nickname) {
+        this.nickname = nickname;
+    }
+
+    public void changePassword(String password) {
+        this.password = password;
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id; // PK
