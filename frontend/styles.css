@@ -11,6 +11,8 @@
   --warning: #ffc46b;
   --danger: #ff8d7a;
   --shadow: 0 24px 50px rgba(3, 12, 17, 0.45);
+  --tree-panel-width: 290px;
+  --insight-panel-width: 290px;
 }
 
 * {
@@ -111,8 +113,8 @@ p {
 }
 
 main {
-  width: min(1220px, 94vw);
-  margin: 1.3rem auto 2.4rem;
+  width: min(1680px, calc(100vw - 24px));
+  margin: 0.9rem auto 1.8rem;
 }
 
 .glass {
@@ -311,16 +313,58 @@ input:focus {
   color: #d8edfb;
 }
 
+.btn-danger {
+  background: linear-gradient(150deg, #ff8d7a, #d94d67);
+  color: #2b0b13;
+}
+
 .btn-lg {
   padding: 0.78rem 1.12rem;
 }
 
+.settings-head {
+  margin-bottom: 0.6rem;
+}
+
+#profileLoginId[readonly] {
+  opacity: 0.85;
+}
+
+.danger-zone {
+  margin-top: 0.9rem;
+  border: 1px solid rgba(255, 141, 122, 0.45);
+  border-radius: 14px;
+  padding: 0.75rem;
+  background: rgba(84, 25, 35, 0.16);
+}
+
+.danger-zone h4 {
+  margin: 0 0 0.5rem;
+}
+
 .app {
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr) 290px;
-  gap: 0.9rem;
+  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  gap: 0.65rem;
   min-height: calc(100vh - 168px);
   animation: fadeIn 0.4s ease;
+}
+
+.resize-handle {
+  width: 10px;
+  border-radius: 999px;
+  background: rgba(140, 187, 211, 0.15);
+  border: 1px solid rgba(140, 187, 211, 0.25);
+  cursor: col-resize;
+  min-height: 240px;
+  align-self: stretch;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: rgba(140, 187, 211, 0.34);
+  border-color: rgba(140, 187, 211, 0.55);
 }
 
 .panel {
@@ -335,6 +379,35 @@ input:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.tree-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(12, 29, 39, 0.7);
+}
+
+.mode-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.22rem 0.58rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  color: #062129;
+  background: linear-gradient(140deg, #63d5be, #6ab4d4);
+  font-weight: 700;
 }
 
 .panel-head h3 {
@@ -355,6 +428,43 @@ input:focus {
   gap: 0.45rem;
   align-content: start;
   padding-right: 0.2rem;
+}
+
+.tree-root.graph-mode {
+  display: block;
+  overflow: auto;
+}
+
+.tree-graph-svg {
+  width: 100%;
+  min-height: 240px;
+  max-height: 420px;
+}
+
+.tree-link {
+  stroke: rgba(171, 209, 230, 0.58);
+  stroke-width: 1.6;
+}
+
+.tree-node-circle {
+  fill: rgba(70, 155, 210, 0.25);
+  stroke: rgba(148, 218, 245, 0.72);
+  stroke-width: 1.2;
+  cursor: pointer;
+}
+
+.tree-node-circle.active {
+  fill: rgba(92, 210, 177, 0.32);
+  stroke: rgba(157, 255, 226, 0.98);
+  stroke-width: 1.8;
+}
+
+.tree-node-label {
+  fill: #dff4ff;
+  font-size: 9px;
+  text-anchor: middle;
+  pointer-events: none;
+  font-weight: 700;
 }
 
 .tree-node {
@@ -530,6 +640,10 @@ input:focus {
 @media (max-width: 1100px) {
   .app {
     grid-template-columns: 1fr;
+  }
+
+  .resize-handle {
+    display: none;
   }
 
   .tree-panel,
