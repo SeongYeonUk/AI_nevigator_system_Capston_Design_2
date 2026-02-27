@@ -18,3 +18,8 @@ spring:
 jwt:
   secret: v9y$B&E)H@McQfTjWnZr4u7x!A%C*F-JaNdRgUkXp2s5v8y/B?E(G+KbPeShVmYq
   expiration: 36000000 # ?? ???? (10??-??)
+
+openai:
+  api:
+    key: ${OPENAI_API_KEY}
+    model: gpt-4o-mini
