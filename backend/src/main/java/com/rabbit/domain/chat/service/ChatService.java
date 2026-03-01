@@ -7,6 +7,8 @@ import com.rabbit.domain.chat.dto.ChatRoomResponse;
 import com.rabbit.domain.chat.entity.ChatMessage;
 import com.rabbit.domain.chat.entity.ChatRoom;
 import com.rabbit.domain.chat.enums.SenderRole;
+import com.rabbit.domain.user.repository.UserRepository;
+import com.rabbit.global.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,21 +19,41 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class ChatService {
+
     private final RabbitGuardService rabbitGuardService;
     private final ChatRoomRepository chatRoomRepository;
     private final ChatMessageRepository chatMessageRepository;
-
+    private final JwtTokenProvider jwtTokenProvider;
+    private final UserRepository userRepository;
 
     @Transactional
-    public Long createRoom(String title) {
+    public Long createRoom(String authorization, String title) {
+        validateAuthorization(authorization);
+
         ChatRoom room = ChatRoom.builder()
                 .title(title)
                 .build();
         return chatRoomRepository.save(room).getId();
     }
 
+    @Transactional
+    public void updateRoomTitle(String authorization, Long roomId, String title) {
+        validateAuthorization(authorization);
+
+        String trimmed = title == null ? "" : title.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("제목은 비워둘 수 없습니다.");
+        }
+
+        ChatRoom room = chatRoomRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("채팅방을 찾을 수 없습니다."));
+        room.changeTitle(trimmed);
+    }
+
     @Transactional(readOnly = true)
-    public List<ChatRoomResponse> getRoomList() {
+    public List<ChatRoomResponse> getRoomList(String authorization) {
+        validateAuthorization(authorization);
+
         return chatRoomRepository.findAll()
                 .stream()
                 .map(room -> new ChatRoomResponse(room.getId(), room.getTitle(), room.getCreatedAt()))
@@ -39,21 +61,20 @@ public class ChatService {
     }
 
     @Transactional
-    public String ask(Long roomId, String userMessage) {
-        ChatRoom room = chatRoomRepository.findById(roomId)
-                .orElseThrow(() -> new RuntimeException("방을 찾을 수 없습니다."));
+    public String ask(String authorization, Long roomId, String userMessage) {
+        validateAuthorization(authorization);
 
-        //  유저 메시지 저장
+        ChatRoom room = chatRoomRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("채팅방을 찾을 수 없습니다."));
+
         chatMessageRepository.save(ChatMessage.builder()
                 .chatRoom(room)
                 .sender(SenderRole.USER)
                 .content(userMessage)
                 .build());
 
-        //  AI 답변 생성 호출
         String aiAnswer = rabbitGuardService.chat(roomId, userMessage);
 
-        //  AI 답변 저장
         chatMessageRepository.save(ChatMessage.builder()
                 .chatRoom(room)
                 .sender(SenderRole.AI)
@@ -64,10 +85,34 @@ public class ChatService {
     }
 
     @Transactional(readOnly = true)
-    public List<ChatHistoryResponse> getHistory(Long roomId) {
+    public List<ChatHistoryResponse> getHistory(String authorization, Long roomId) {
+        validateAuthorization(authorization);
+
         return chatMessageRepository.findByChatRoomIdOrderByCreatedAtAsc(roomId)
                 .stream()
                 .map(msg -> new ChatHistoryResponse(msg.getContent(), msg.getSender(), msg.getCreatedAt()))
                 .collect(Collectors.toList());
+    }
+
+    private void validateAuthorization(String rawToken) {
+        String token = stripBearer(rawToken);
+        if (!jwtTokenProvider.validateToken(token)) {
+            throw new IllegalArgumentException("유효하지 않은 토큰입니다.");
+        }
+
+        String loginId = jwtTokenProvider.getLoginId(token);
+        if (!userRepository.existsByLoginId(loginId)) {
+            throw new IllegalArgumentException("사용자를 찾을 수 없습니다.");
+        }
+    }
+
+    private String stripBearer(String rawToken) {
+        if (rawToken == null || rawToken.isBlank()) {
+            throw new IllegalArgumentException("인증 토큰이 없습니다.");
+        }
+        if (rawToken.startsWith("Bearer ")) {
+            return rawToken.substring(7).trim();
+        }
+        return rawToken.trim();
     }
 }

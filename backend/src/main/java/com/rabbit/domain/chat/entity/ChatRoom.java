@@ -21,4 +21,8 @@ public class ChatRoom {
 
     @Builder
     public ChatRoom(String title) { this.title = title; }
+
+    public void changeTitle(String title) {
+        this.title = title;
+    }
 }

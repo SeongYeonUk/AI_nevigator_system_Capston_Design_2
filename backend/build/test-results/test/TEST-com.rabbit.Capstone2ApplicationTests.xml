@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.rabbit.Capstone2ApplicationTests" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-02-27T07:58:31.588Z" hostname="JOSEPH" time="9.956">
+  <properties/>
+  <testcase name="contextLoads()" classname="com.rabbit.Capstone2ApplicationTests" time="0.684"/>
+  <system-out><![CDATA[16:58:31.811 [Test worker] INFO org.springframework.test.context.support.AnnotationConfigContextLoaderUtils -- Could not detect default configuration classes for test class [com.rabbit.Capstone2ApplicationTests]: Capstone2ApplicationTests does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+16:58:31.944 [Test worker] INFO org.springframework.boot.test.context.SpringBootTestContextBootstrapper -- Found @SpringBootConfiguration com.rabbit.Capstone2Application for test class com.rabbit.Capstone2ApplicationTests
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v4.0.2)
+
+2026-02-27T16:58:32.601+09:00  INFO 33048 --- [    Test worker] com.rabbit.Capstone2ApplicationTests     : Starting Capstone2ApplicationTests using Java 17.0.17 with PID 33048 (started by jaehw in C:\Users\jaehw\AI_nevigator_system_Capston_Design_2\backend)
+2026-02-27T16:58:32.605+09:00  INFO 33048 --- [    Test worker] com.rabbit.Capstone2ApplicationTests     : No active profile set, falling back to 1 default profile: "default"
+2026-02-27T16:58:33.923+09:00  INFO 33048 --- [    Test worker] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+2026-02-27T16:58:34.048+09:00  INFO 33048 --- [    Test worker] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 95 ms. Found 1 JPA repository interface.
+2026-02-27T16:58:35.034+09:00  INFO 33048 --- [    Test worker] org.hibernate.orm.jpa                    : HHH008540: Processing PersistenceUnitInfo [name: default]
+2026-02-27T16:58:35.186+09:00  INFO 33048 --- [    Test worker] org.hibernate.orm.core                   : HHH000001: Hibernate ORM core version 7.2.1.Final
+2026-02-27T16:58:36.114+09:00  INFO 33048 --- [    Test worker] o.s.o.j.p.SpringPersistenceUnitInfo      : No LoadTimeWeaver setup: ignoring JPA class transformer
+2026-02-27T16:58:36.162+09:00  INFO 33048 --- [    Test worker] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-02-27T16:58:36.773+09:00  INFO 33048 --- [    Test worker] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Added connection com.mysql.cj.jdbc.ConnectionImpl@6ed7c178
+2026-02-27T16:58:36.778+09:00  INFO 33048 --- [    Test worker] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-02-27T16:58:36.920+09:00  INFO 33048 --- [    Test worker] org.hibernate.orm.connections.pooling    : HHH10001005: Database info:
+	Database JDBC URL [jdbc:mysql://localhost:3306/rabbitholes?serverTimezone=Asia/Seoul&characterEncoding=UTF-8]
+	Database driver: MySQL Connector/J
+	Database dialect: MySQLDialect
+	Database version: 8.0.42
+	Default catalog/schema: rabbitholes/undefined
+	Autocommit mode: undefined/unknown
+	Isolation level: REPEATABLE_READ [default REPEATABLE_READ]
+	JDBC fetch size: none
+	Pool: DataSourceConnectionProvider
+	Minimum pool size: undefined/unknown
+	Maximum pool size: undefined/unknown
+2026-02-27T16:58:38.634+09:00  INFO 33048 --- [    Test worker] org.hibernate.orm.core                   : HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
+2026-02-27T16:58:38.722+09:00  INFO 33048 --- [    Test worker] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-02-27T16:58:38.932+09:00  INFO 33048 --- [    Test worker] o.s.d.j.r.query.QueryEnhancerFactories   : Hibernate is in classpath; If applicable, HQL parser will be used.
+2026-02-27T16:58:39.574+09:00  WARN 33048 --- [    Test worker] JpaBaseConfiguration$JpaWebConfiguration : spring.jpa.open-in-view is enabled by default. Therefore, database queries may be performed during view rendering. Explicitly configure spring.jpa.open-in-view to disable this warning
+2026-02-27T16:58:39.827+09:00  WARN 33048 --- [    Test worker] .s.a.UserDetailsServiceAutoConfiguration : 
+
+Using generated security password: 02edc5b5-f50e-4f0a-ac51-c8569b356dcc
+
+This generated password is for development use only. Your security configuration must be updated before running your application in production.
+
+2026-02-27T16:58:39.847+09:00  INFO 33048 --- [    Test worker] r$InitializeUserDetailsManagerConfigurer : Global AuthenticationManager configured with UserDetailsService bean with name inMemoryUserDetailsManager
+2026-02-27T16:58:40.821+09:00  INFO 33048 --- [    Test worker] com.rabbit.Capstone2ApplicationTests     : Started Capstone2ApplicationTests in 8.632 seconds (process running for 10.411)
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

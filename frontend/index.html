@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
@@ -26,6 +26,7 @@
       <button id="openSignupBtn" class="btn btn-primary">회원가입</button>
       <button id="openHomeBtn" class="btn btn-ghost hidden">홈</button>
       <button id="openSettingsBtn" class="btn btn-ghost hidden">설정</button>
+      <button id="openRoomsBtn" class="btn btn-ghost hidden">채팅목록</button>
       <button id="logoutBtn" class="btn btn-ghost hidden">로그아웃</button>
     </nav>
   </header>
@@ -36,12 +37,12 @@
         <p class="badge">AI Learning Flow Workspace</p>
         <h1>대화형 채팅을 넘어서,<br />대화를 <em>지식 경로</em>로 관리하세요.</h1>
         <p class="hero-copy">
-          PathLearn AI는 질문-답변 흐름을 트리 구조로 시각화하여 학습 맥락을 유지합니다.
+          PathLearn AI는 질문-응답 흐름을 트리 구조로 시각화하여 학습 맥락을 유지합니다.
           과거 노드에서 분기하고, 이탈 알림으로 목표와의 정합성을 점검하세요.
         </p>
         <div class="hero-cta">
           <button id="heroStartBtn" class="btn btn-primary btn-lg">시작하기</button>
-          <button id="heroDemoBtn" class="btn btn-outline btn-lg">데모 살펴보기</button>
+          <button id="heroDemoBtn" class="btn btn-outline btn-lg">데모 미리보기</button>
         </div>
       </div>
 
@@ -55,7 +56,7 @@
           <p>과거 노드에서 새 질문을 시작해 학습 경로를 비교할 수 있습니다.</p>
         </article>
         <article class="glass feature">
-          <h3>학습 이탈 점검</h3>
+          <h3>학습 이탈 감지</h3>
           <p>깊이 기반 알림으로 현재 경로가 목표에서 벗어나는지 빠르게 확인합니다.</p>
         </article>
       </div>
@@ -106,65 +107,82 @@
       </div>
     </section>
 
-    <section id="appView" class="app hidden">
-      <aside class="panel tree-panel glass">
-        <div class="panel-head">
-          <h3>대화 경로 트리</h3>
-          <div class="tree-head-controls">
-            <div class="mode-toggle">
-              <button id="treeListModeBtn" class="mode-btn active" type="button">목록형</button>
-              <button id="treeGraphModeBtn" class="mode-btn" type="button">그래프형</button>
-            </div>
-            <span id="nodeCount" class="counter">0 Nodes</span>
-          </div>
-        </div>
-        <div id="treeRoot" class="tree-root"></div>
-      </aside>
+    <section id="appView" class="app-wrap hidden">
+      <button id="roomDrawerToggle" class="room-drawer-toggle" type="button">내 채팅</button>
+      <div id="roomDrawerBackdrop" class="room-drawer-backdrop"></div>
 
-      <div id="treeResizeHandle" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Tree panel resize handle"></div>
-
-      <section class="panel chat-panel glass">
-        <div class="panel-head">
-          <h3>대화 창</h3>
-          <span id="branchTag" class="counter">Root Branch</span>
+      <aside id="roomDrawer" class="room-drawer">
+        <div class="room-drawer-head">
+          <h3>내 채팅</h3>
+          <button id="roomDrawerCloseBtn" class="icon-btn" type="button">×</button>
         </div>
-        <div id="chatFeed" class="chat-feed"></div>
-        <form id="chatForm" class="chat-form">
-          <input id="chatInput" type="text" placeholder="질문을 입력하면 현재 선택 노드에서 분기됩니다." required />
-          <button type="submit" class="btn btn-primary">전송</button>
+        <form id="roomCreateForm" class="room-create-form">
+          <input id="roomTitleInput" type="text" maxlength="80" placeholder="새 대화 제목" />
+          <button type="submit" class="btn btn-primary">추가</button>
         </form>
-      </section>
-
-      <div id="insightResizeHandle" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Insight panel resize handle"></div>
-
-      <aside class="panel insight-panel glass">
-        <div class="panel-head">
-          <h3>학습 인사이트</h3>
-        </div>
-
-        <div class="insight-block">
-          <h4>선택 노드</h4>
-          <p id="selectedNodeTitle">루트 노드</p>
-          <p id="selectedNodeMeta" class="muted">Depth 0 / Parent 없음</p>
-        </div>
-
-        <div class="insight-block">
-          <h4>경로 상태</h4>
-          <div class="progress-wrap">
-            <div id="depthBar" class="progress-bar"></div>
-          </div>
-          <p id="driftAlert" class="alert">정상 범위: 학습 경로가 안정적으로 유지되고 있습니다.</p>
-        </div>
-
-        <div class="insight-block">
-          <h4>사용 안내</h4>
-          <ul>
-            <li>트리 노드를 클릭하면 해당 지점으로 이동합니다.</li>
-            <li>과거 노드 선택 후 질문하면 새 분기가 생성됩니다.</li>
-            <li>깊이가 깊어지면 이탈 알림이 표시됩니다.</li>
-          </ul>
-        </div>
+        <div id="roomList" class="room-list"></div>
       </aside>
+
+      <section id="appViewInner" class="app">
+        <aside class="panel tree-panel glass">
+          <div class="panel-head">
+            <h3>대화 경로 트리</h3>
+            <div class="tree-head-controls">
+              <div class="mode-toggle">
+                <button id="treeListModeBtn" class="mode-btn active" type="button">목록형</button>
+                <button id="treeGraphModeBtn" class="mode-btn" type="button">그래프형</button>
+              </div>
+              <span id="nodeCount" class="counter">0 Nodes</span>
+            </div>
+          </div>
+          <div id="treeRoot" class="tree-root"></div>
+        </aside>
+
+        <div id="treeResizeHandle" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Tree panel resize handle"></div>
+
+        <section class="panel chat-panel glass">
+          <div class="panel-head">
+            <h3>대화 창</h3>
+            <span id="branchTag" class="counter">Root Branch</span>
+          </div>
+          <div id="chatFeed" class="chat-feed"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" type="text" placeholder="질문을 입력하면 현재 선택 노드에서 분기됩니다." required />
+            <button type="submit" class="btn btn-primary">전송</button>
+          </form>
+        </section>
+
+        <div id="insightResizeHandle" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Insight panel resize handle"></div>
+
+        <aside class="panel insight-panel glass">
+          <div class="panel-head">
+            <h3>학습 인사이트</h3>
+          </div>
+
+          <div class="insight-block">
+            <h4>선택 노드</h4>
+            <p id="selectedNodeTitle">루트 노드</p>
+            <p id="selectedNodeMeta" class="muted">Depth 0 / Parent 없음</p>
+          </div>
+
+          <div class="insight-block">
+            <h4>경로 상태</h4>
+            <div class="progress-wrap">
+              <div id="depthBar" class="progress-bar"></div>
+            </div>
+            <p id="driftAlert" class="alert">정상 범위: 학습 경로가 안정적으로 유지되고 있습니다.</p>
+          </div>
+
+          <div class="insight-block">
+            <h4>사용 안내</h4>
+            <ul>
+              <li>트리 노드를 클릭하면 해당 지점으로 이동합니다.</li>
+              <li>과거 노드 선택 후 질문하면 새 분기가 생성됩니다.</li>
+              <li>깊이가 깊어지면 이탈 알림이 표시됩니다.</li>
+            </ul>
+          </div>
+        </aside>
+      </section>
     </section>
 
     <section id="settingsView" class="auth hidden">
@@ -214,3 +232,5 @@
   <script type="module" src="js/main.js"></script>
 </body>
 </html>
+
+
