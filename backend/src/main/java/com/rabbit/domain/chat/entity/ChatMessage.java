@@ -17,6 +17,10 @@ public class ChatMessage {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "parent_id")
+    private ChatMessage parent;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "room_id")
     private ChatRoom chatRoom;
 
@@ -28,10 +32,14 @@ public class ChatMessage {
 
     private LocalDateTime createdAt = LocalDateTime.now();
 
+    private int depth;
+
     @Builder
-    public ChatMessage(ChatRoom chatRoom, SenderRole sender, String content) {
+    public ChatMessage(ChatMessage parent, ChatRoom chatRoom, SenderRole sender, String content, int depth) {
+        this.parent = parent;
         this.chatRoom = chatRoom;
         this.sender = sender;
         this.content = content;
+        this.depth = depth;
     }
 }

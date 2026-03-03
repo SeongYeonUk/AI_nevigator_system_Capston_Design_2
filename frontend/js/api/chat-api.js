@@ -70,22 +70,33 @@ export function getRoomHistoryApi(roomId, token = "") {
   return request(`/api/chat/room/${roomId}/history`, { method: "GET" }, token);
 }
 
-export function askChatApi({ roomId, message, token = "" }) {
+export function askChatApi({ roomId,parentId, message, token = "" }) {
   return request(
     "/api/chat",
     {
       method: "POST",
-      body: JSON.stringify({ roomId, message })
+      body: JSON.stringify({ roomId, parentId, message })
     },
     token
   );
 }
 
-export async function requestAssistantTurn({ roomId, message, depth, token = "" }) {
-  if (CHAT_API_MODE === "backend") {
-    const response = await askChatApi({ roomId, message, token });
-    return { answer: response.answer || "응답이 없습니다.", source: "backend" };
-  }
+export async function requestAssistantTurn({ roomId, message, parentId, token }) {
+  const response = await fetch(`${API_BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ roomId, message, parentId })
+  });
 
-  return { answer: buildMockAnswer(message, depth), source: "mock" };
+  if (!response.ok) throw new Error('API 호출 실패');
+  
+
+  return await response.json(); 
+}
+
+export function getNodeInsightApi(nodeId, token = "") { // 인사이트 API 추가
+  return request(`/api/chat/node/${nodeId}/insight`, { method: "GET" }, token);
 }
