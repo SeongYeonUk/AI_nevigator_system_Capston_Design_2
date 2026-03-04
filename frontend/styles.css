@@ -812,6 +812,47 @@ input:focus {
     grid-template-columns: 1fr;
   }
 }
+/* --- AI 답변 가독성 향상 (들여쓰기 및 줄바꿈) --- */
+
+/* 1. 대화창(Chat Feed)의 AI 말풍선 설정 */
+.bubble.ai {
+  white-space: pre-wrap;   /* 👈 핵심: 줄바꿈과 연속된 공백(들여쓰기)을 그대로 표시 */
+  word-break: break-word;  /* 너무 긴 단어는 박스 밖으로 나가지 않게 조절 */
+  line-height: 1.6;        /* 줄 간격을 넓혀 읽기 편하게 함 */
+  padding: 0.8rem 1rem;    /* 여백 확보 */
+}
+
+/* 2. 인사이트 패널(오른쪽)의 상세 답변 영역 설정 */
+.ai-answer-body {
+  white-space: pre-wrap;   /* 👈 핵심: 여기서도 줄바꿈/들여쓰기 유지 */
+  line-height: 1.6;
+  color: var(--text);
+  font-size: 0.92rem;
+  margin-top: 0.6rem;
+  padding: 0.8rem;
+  background: var(--bg-soft); /* 기존 변수 활용 */
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+/* 3. 마크다운 리스트(점) 스타일 강제 적용 */
+/* 만약 marked.js를 사용한다면 리스트가 보일 수 있도록 여백을 줍니다. */
+.ai-answer-body ul, .ai-msg ul,
+.ai-answer-body ol, .ai-msg ol {
+  margin-left: 1.5rem;    /* 왼쪽 들여쓰기 공간 확보 */
+  margin-bottom: 1rem;
+  list-style: disc !important; /* 리스트 점(Bullet) 강제 표시 */
+}
+
+.ai-answer-body li, .ai-msg li {
+  margin-bottom: 0.4rem;  /* 리스트 항목 간 간격 */
+}
+
+/* 4. 강조(Bold) 텍스트 스타일 */
+.ai-answer-body strong, .ai-msg strong {
+  color: var(--accent);   /* 민교님의 포인트 컬러(#37c6a5) 적용 */
+  font-weight: 700;
+}
 
 
 
