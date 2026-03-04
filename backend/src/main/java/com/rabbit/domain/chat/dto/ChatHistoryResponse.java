@@ -14,6 +14,9 @@ public class ChatHistoryResponse {
     private Long id;
     private Long parentId;
     private String content;
+    private String nodeTitle;
+    private String level1Topic;
+    private String level2Topic;
     private SenderRole sender;
     private int depth;
     private LocalDateTime createdAt;
@@ -23,6 +26,9 @@ public class ChatHistoryResponse {
                 .id(message.getId())
                 .parentId(message.getParent() != null ? message.getParent().getId() : null)
                 .content(message.getContent())
+                .nodeTitle(message.getNodeTitle())
+                .level1Topic(message.getLevel1Topic())
+                .level2Topic(message.getLevel2Topic())
                 .sender(message.getSender())
                 .depth(message.getDepth())
                 .createdAt(message.getCreatedAt())

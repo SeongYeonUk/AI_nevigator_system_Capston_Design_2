@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.rabbit.domain.chat.service.ConversationTreePlannerServiceTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-03-04T10:19:47.413Z" hostname="YEONUK01" time="0.01">
+  <properties/>
+  <testcase name="depthTwoOrMoreUsesAiNodeTitleAndBranchLevelTwoTopic()" classname="com.rabbit.domain.chat.service.ConversationTreePlannerServiceTest" time="0.007"/>
+  <testcase name="depthOneUsesExplicitSubTopicAndKeepsExistingRoot()" classname="com.rabbit.domain.chat.service.ConversationTreePlannerServiceTest" time="0.001"/>
+  <testcase name="depthZeroUsesExplicitRootTopic()" classname="com.rabbit.domain.chat.service.ConversationTreePlannerServiceTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

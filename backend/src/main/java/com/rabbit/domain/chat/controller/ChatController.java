@@ -4,6 +4,7 @@ import com.rabbit.domain.chat.dto.ChatHistoryResponse;
 import com.rabbit.domain.chat.dto.ChatRequest;
 import com.rabbit.domain.chat.dto.ChatResponse;
 import com.rabbit.domain.chat.dto.ChatRoomResponse;
+import com.rabbit.domain.chat.dto.ConversationTreeResponse;
 import com.rabbit.domain.chat.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -90,6 +91,14 @@ public class ChatController {
             @PathVariable Long roomId
     ) {
         return chatService.getHistory(authorization, roomId);
+    }
+
+    @GetMapping("/room/{roomId}/tree")
+    public ConversationTreeResponse getConversationTree(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId
+    ) {
+        return chatService.getConversationTree(authorization, roomId);
     }
 
 

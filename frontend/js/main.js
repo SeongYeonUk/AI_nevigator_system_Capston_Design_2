@@ -1,9 +1,10 @@
 ﻿import { loginApi, signupApi } from "./api/auth-api.js";
 import {
+  askChatApi,
   createRoomApi,
   getRoomHistoryApi,
+  getRoomTreeApi,
   getRoomsApi,
-  requestAssistantTurn,
   updateRoomTitleApi
 } from "./api/chat-api.js";
 import { deleteAccountApi, getProfileApi, updateProfileApi } from "./api/user-api.js";
@@ -338,9 +339,38 @@ async function createRoomWithFallbackTitle() {
 }
 
 async function loadRoomHistory(roomId) {
-  const history = await getRoomHistoryApi(roomId, state.currentSession?.accessToken || "");
+  const token = state.currentSession?.accessToken || "";
+
+  try {
+    const tree = await getRoomTreeApi(roomId, token);
+    if (tree && Array.isArray(tree.nodes)) {
+      state.nodes = treeToNodes(tree.nodes);
+      state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
+      return;
+    }
+  } catch (error) {
+    console.warn("Tree API fallback to history API:", error);
+  }
+
+  const history = await getRoomHistoryApi(roomId, token);
   state.nodes = historyToNodes(history, roomId);
   state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
+}
+
+function treeToNodes(treeNodes) {
+  if (!Array.isArray(treeNodes)) {
+    return [];
+  }
+
+  return treeNodes.map((entry) => ({
+    id: String(entry.id),
+    parentId: entry.parentId != null ? String(entry.parentId) : null,
+    title: entry.title || summarizeTitle(entry.userQuestion || ""),
+    userQuestion: entry.userQuestion || "",
+    aiAnswer: entry.aiAnswer || "",
+    depth: Number(entry.depth) || 0,
+    timestamp: Date.parse(entry.createdAt) || Date.now()
+  }));
 }
 
 function historyToNodes(history, roomId) {
@@ -378,7 +408,7 @@ function historyToNodes(history, roomId) {
       nodes.push({
         id: String(entry.id), // ID는 항상 문자열로!
         parentId: realParentId ? String(realParentId) : null, // 부모도 문자열로!
-        title: summarizeTitle(pendingUser.content),
+        title: pendingUser.nodeTitle || summarizeTitle(pendingUser.content),
         userQuestion: pendingUser.content,
         aiAnswer: entry.content,
         depth: entry.depth,
@@ -413,6 +443,12 @@ async function onSendMessage(event) {
   }
 
   try {
+    if (!state.currentRoomId) {
+      const roomId = await createRoomWithFallbackTitle();
+      state.currentRoomId = roomId;
+      await refreshRoomsOnly();
+    }
+
     // 1. 부모 노드 찾기 및 임시 ID 생성
     const parent = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
     const tempId = `n_${Date.now().toString(36)}`; 
@@ -432,7 +468,7 @@ async function onSendMessage(event) {
     render();
 
     // 3. 백엔드 API 호출
-    const response = await requestAssistantTurn({
+    const response = await askChatApi({
       roomId: state.currentRoomId,
       message: question,
       parentId: parent ? parent.id : null, // 부모가 숫자가 된 상태면 숫자가 넘어감
@@ -443,19 +479,31 @@ async function onSendMessage(event) {
     const target = state.nodes.find((n) => n.id === tempId);
     if (target && response) {
       target.aiAnswer = response.answer || "응답이 없습니다.";
+      if (response.nodeTitle && String(response.nodeTitle).trim()) {
+        target.title = String(response.nodeTitle).trim();
+      }
       
       if (response.newNodeId) {
-        console.log(`[연동성공] ID 교체: ${tempId} -> ${response.newNodeId}`);
-        target.id = response.newNodeId; // 진짜 DB ID로 업데이트
+        const realNodeId = String(response.newNodeId);
+        console.log(`[연동성공] ID 교체: ${tempId} -> ${realNodeId}`);
+        target.id = realNodeId; // 진짜 DB ID로 업데이트
         
         // 현재 선택된 노드도 진짜 ID로 동기화
         if (state.selectedNodeId === tempId) {
-          state.selectedNodeId = response.newNodeId;
+          state.selectedNodeId = realNodeId;
         }
       }
     }
 
-    render(); // 업데이트된 ID와 답변으로 다시 그리기
+    if (el.chatInput) {
+      el.chatInput.value = "";
+    }
+
+    await loadRoomHistory(state.currentRoomId);
+    if (response?.newNodeId) {
+      state.selectedNodeId = String(response.newNodeId);
+    }
+    render(); // 서버 상태(자동 생성 노드 포함) 기준으로 다시 그리기
   }catch (error) {
     // 에러 발생 시 처리
     const target = state.nodes.find((n) => n.id === state.selectedNodeId);
@@ -695,6 +743,9 @@ function renderChat() {
 
   const pathNodes = state.selectedNodeId ? getPathToNode(state.selectedNodeId) : [];
   pathNodes.forEach((node) => {
+    if (isAutoSubtopicSeedNode(node)) {
+      return;
+    }
     el.chatFeed.appendChild(makeBubble("user", node.userQuestion, node.timestamp));
     el.chatFeed.appendChild(makeBubble("ai", node.aiAnswer, node.timestamp + 1000));
   });
@@ -710,6 +761,17 @@ function renderChat() {
     el.branchTag.textContent = selected ? `${roomLabel} / ${selected.title}` : roomLabel;
   }
   el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
+}
+
+function isAutoSubtopicSeedNode(node) {
+  const userQuestion = String(node?.userQuestion || "");
+  const aiAnswer = String(node?.aiAnswer || "");
+
+  if (userQuestion.startsWith("[AUTO_SUBTOPIC]")) {
+    return true;
+  }
+
+  return userQuestion.startsWith("소주제:") && aiAnswer.includes("초기 소주제");
 }
 
 async function renderInsights() {

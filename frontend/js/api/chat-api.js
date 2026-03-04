@@ -70,6 +70,10 @@ export function getRoomHistoryApi(roomId, token = "") {
   return request(`/api/chat/room/${roomId}/history`, { method: "GET" }, token);
 }
 
+export function getRoomTreeApi(roomId, token = "") {
+  return request(`/api/chat/room/${roomId}/tree`, { method: "GET" }, token);
+}
+
 export function askChatApi({ roomId,parentId, message, token = "" }) {
   return request(
     "/api/chat",
@@ -82,19 +86,7 @@ export function askChatApi({ roomId,parentId, message, token = "" }) {
 }
 
 export async function requestAssistantTurn({ roomId, message, parentId, token }) {
-  const response = await fetch(`${API_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ roomId, message, parentId })
-  });
-
-  if (!response.ok) throw new Error('API 호출 실패');
-  
-
-  return await response.json(); 
+  return askChatApi({ roomId, parentId, message, token });
 }
 
 export function getNodeInsightApi(nodeId, token = "") { // 인사이트 API 추가
