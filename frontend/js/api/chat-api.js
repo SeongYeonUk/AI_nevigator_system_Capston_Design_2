@@ -92,3 +92,7 @@ export async function requestAssistantTurn({ roomId, message, parentId, token })
 export function getNodeInsightApi(nodeId, token = "") { // 인사이트 API 추가
   return request(`/api/chat/node/${nodeId}/insight`, { method: "GET" }, token);
 }
+
+export function deleteRoomApi(roomId, token = "") {
+  return request(`/api/chat/room/${roomId}`, { method: "DELETE" }, token);
+}

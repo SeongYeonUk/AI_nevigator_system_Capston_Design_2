@@ -30,6 +30,17 @@ body {
   overflow-x: hidden;
 }
 
+body.app-active {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.app-active main {
+  height: calc(100vh - 82px);
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
 h1, h2, h3, h4 {
   font-family: "Sora", sans-serif;
   margin: 0;
@@ -121,6 +132,7 @@ main {
   position: relative;
   padding-left: 0;
   transition: padding-left 0.22s ease;
+  height: 100%;
 }
 
 .app-wrap.drawer-open {
@@ -357,6 +369,8 @@ input:focus {
   grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
   gap: 0.65rem;
   min-height: calc(100vh - 168px);
+  height: 100%;
+  overflow: hidden;
   animation: fadeIn 0.4s ease;
 }
 
@@ -394,7 +408,7 @@ input:focus {
   box-shadow: var(--shadow);
   padding: 0.75rem;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 0.65rem;
   transform: translateX(calc(-100% - 12px));
   transition: transform 0.22s ease;
@@ -417,11 +431,29 @@ input:focus {
   gap: 0.45rem;
 }
 
+.room-bulk-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
 .room-list {
   overflow: auto;
   display: grid;
   gap: 0.35rem;
   align-content: start;
+}
+
+.room-item-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
+.room-select-checkbox {
+  width: 16px;
+  height: 16px;
+  align-self: center;
 }
 
 .room-item {
@@ -500,6 +532,32 @@ input:focus {
   gap: 0.45rem;
 }
 
+.graph-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  justify-content: center;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.zoom-btn {
+  border: 1px solid var(--line);
+  background: rgba(12, 29, 39, 0.75);
+  color: #d8edfb;
+  border-radius: 8px;
+  padding: 0.18rem 0.42rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.zoom-level {
+  min-width: 44px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .mode-toggle {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -546,12 +604,21 @@ input:focus {
 .tree-root.graph-mode {
   display: block;
   overflow: auto;
+  min-height: 0;
+  position: relative;
+}
+
+.tree-graph-canvas {
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0 auto;
 }
 
 .tree-graph-svg {
-  width: 100%;
+  display: block;
   min-height: 240px;
-  max-height: 420px;
+  max-height: none;
 }
 
 .tree-link {
@@ -564,6 +631,7 @@ input:focus {
   stroke: rgba(148, 218, 245, 0.72);
   stroke-width: 1.2;
   cursor: pointer;
+  transition: r 0.14s ease, stroke-width 0.14s ease, fill 0.14s ease, filter 0.14s ease;
 }
 
 .tree-node-circle.active {
@@ -572,12 +640,38 @@ input:focus {
   stroke-width: 1.8;
 }
 
+.tree-node-circle.hovered {
+  fill: rgba(101, 192, 238, 0.36);
+  stroke-width: 2.3;
+  filter: drop-shadow(0 0 6px rgba(109, 200, 244, 0.45));
+}
+
 .tree-node-label {
   fill: #dff4ff;
-  font-size: 9px;
+  font-size: 13px;
   text-anchor: middle;
   pointer-events: none;
   font-weight: 700;
+}
+
+.graph-tooltip {
+  position: absolute;
+  z-index: 24;
+  max-width: 340px;
+  padding: 0.72rem 0.86rem;
+  border-radius: 12px;
+  border: 1px solid rgba(138, 201, 231, 0.42);
+  background: linear-gradient(165deg, rgba(7, 22, 31, 0.96), rgba(13, 35, 48, 0.96));
+  box-shadow: 0 10px 24px rgba(2, 10, 16, 0.45), inset 0 0 0 1px rgba(175, 223, 245, 0.08);
+  color: #e8f6ff;
+  font-size: 1.03rem;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  white-space: normal;
+  word-break: break-word;
 }
 
 .tree-node {
@@ -626,15 +720,22 @@ input:focus {
 }
 
 .chat-panel {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-feed {
   overflow: auto;
+  overflow-y: auto;
   display: grid;
   gap: 0.55rem;
   align-content: start;
   padding-right: 0.2rem;
+  min-height: 0;
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
 }
 
 .bubble {

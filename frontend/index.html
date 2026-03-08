@@ -120,6 +120,11 @@
           <input id="roomTitleInput" type="text" maxlength="80" placeholder="새 대화 제목" />
           <button type="submit" class="btn btn-primary">추가</button>
         </form>
+        <div class="room-bulk-actions">
+          <button id="roomDeleteModeBtn" type="button" class="btn btn-ghost">대화 선택 삭제</button>
+          <button id="roomDeleteApplyBtn" type="button" class="btn btn-danger hidden">선택 삭제 실행</button>
+          <button id="roomDeleteCancelBtn" type="button" class="btn btn-ghost hidden">취소</button>
+        </div>
         <div id="roomList" class="room-list"></div>
       </aside>
 
@@ -136,6 +141,12 @@
             </div>
           </div>
           <div id="treeRoot" class="tree-root"></div>
+          <div id="graphZoomFooter" class="graph-zoom-controls hidden">
+            <button id="graphZoomOutBtn" class="zoom-btn" type="button" title="축소">-</button>
+            <span id="graphZoomLevel" class="zoom-level">100%</span>
+            <button id="graphZoomInBtn" class="zoom-btn" type="button" title="확대">+</button>
+            <button id="graphZoomResetBtn" class="zoom-btn" type="button" title="원래 크기">초기화</button>
+          </div>
         </aside>
 
         <div id="treeResizeHandle" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Tree panel resize handle"></div>

@@ -2,6 +2,7 @@
 import {
   askChatApi,
   createRoomApi,
+  deleteRoomApi,
   getRoomHistoryApi,
   getRoomTreeApi,
   getRoomsApi,
@@ -15,11 +16,15 @@ const state = {
   currentSession: loadSession(),
   currentView: "landing",
   treeViewMode: "list",
+  graphZoom: 1,
+  roomDeleteMode: false,
+  selectedRoomIdsForDelete: new Set(),
   selectedNodeId: null,
   nodes: [],
   chatRooms: [],
   currentRoomId: null,
-  isRoomDrawerOpen: false
+  isRoomDrawerOpen: false,
+  localDeletedRoomIds: loadDeletedRoomIds()
 };
 
 const el = {
@@ -54,6 +59,9 @@ const el = {
   roomCreateForm: document.getElementById("roomCreateForm"),
   roomTitleInput: document.getElementById("roomTitleInput"),
   roomList: document.getElementById("roomList"),
+  roomDeleteModeBtn: document.getElementById("roomDeleteModeBtn"),
+  roomDeleteApplyBtn: document.getElementById("roomDeleteApplyBtn"),
+  roomDeleteCancelBtn: document.getElementById("roomDeleteCancelBtn"),
 
   authMsg: document.getElementById("authMsg"),
   settingsMsg: document.getElementById("settingsMsg"),
@@ -62,6 +70,11 @@ const el = {
   treeListModeBtn: document.getElementById("treeListModeBtn"),
   treeGraphModeBtn: document.getElementById("treeGraphModeBtn"),
   nodeCount: document.getElementById("nodeCount"),
+  graphZoomInBtn: document.getElementById("graphZoomInBtn"),
+  graphZoomOutBtn: document.getElementById("graphZoomOutBtn"),
+  graphZoomResetBtn: document.getElementById("graphZoomResetBtn"),
+  graphZoomLevel: document.getElementById("graphZoomLevel"),
+  graphZoomFooter: document.getElementById("graphZoomFooter"),
 
   branchTag: document.getElementById("branchTag"),
   chatFeed: document.getElementById("chatFeed"),
@@ -114,11 +127,17 @@ function bindEvents() {
 
   el.treeListModeBtn?.addEventListener("click", () => setTreeViewMode("list"));
   el.treeGraphModeBtn?.addEventListener("click", () => setTreeViewMode("graph"));
+  el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(0.2));
+  el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-0.2));
+  el.graphZoomResetBtn?.addEventListener("click", resetGraphZoom);
 
   el.roomDrawerToggle?.addEventListener("click", () => toggleRoomDrawer());
   el.roomDrawerCloseBtn?.addEventListener("click", () => toggleRoomDrawer(false));
   el.roomDrawerBackdrop?.addEventListener("click", () => toggleRoomDrawer(false));
   el.roomCreateForm?.addEventListener("submit", onCreateRoom);
+  el.roomDeleteModeBtn?.addEventListener("click", enterRoomDeleteMode);
+  el.roomDeleteApplyBtn?.addEventListener("click", onApplyDeleteSelectedRooms);
+  el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
 }
 
 function render() {
@@ -132,6 +151,7 @@ function render() {
 
 function switchView(view, authTab) {
   state.currentView = view;
+  document.body.classList.toggle("app-active", view === "app");
 
   el.landingView?.classList.toggle("hidden", view !== "landing");
   el.authView?.classList.toggle("hidden", view !== "auth");
@@ -256,7 +276,10 @@ async function openAppView() {
 async function bootstrapChatRooms() {
   try {
     const rooms = await getRoomsApi(state.currentSession?.accessToken || "");
-    state.chatRooms = Array.isArray(rooms) ? rooms.sort((a, b) => Number(b.id) - Number(a.id)) : [];
+    const visibleRooms = Array.isArray(rooms)
+      ? rooms.filter((room) => !state.localDeletedRoomIds.has(String(room.id)))
+      : [];
+    state.chatRooms = visibleRooms.sort((a, b) => Number(b.id) - Number(a.id));
 
     if (state.chatRooms.length === 0) {
       state.currentRoomId = null;
@@ -296,24 +319,102 @@ function renderRoomDrawer() {
   el.roomDrawerBackdrop?.classList.toggle("open", state.isRoomDrawerOpen);
   el.appView?.classList.toggle("drawer-open", state.isRoomDrawerOpen);
 
+  el.roomDeleteModeBtn?.classList.toggle("hidden", state.roomDeleteMode);
+  el.roomDeleteApplyBtn?.classList.toggle("hidden", !state.roomDeleteMode);
+  el.roomDeleteCancelBtn?.classList.toggle("hidden", !state.roomDeleteMode);
+
   if (!el.roomList) {
     return;
   }
 
   el.roomList.innerHTML = "";
   state.chatRooms.forEach((room) => {
+    const row = document.createElement("div");
+    row.className = "room-item-row";
+
+    if (state.roomDeleteMode) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "room-select-checkbox";
+      checkbox.checked = state.selectedRoomIdsForDelete.has(String(room.id));
+      checkbox.addEventListener("change", (event) => {
+        const roomKey = String(room.id);
+        if (event.target.checked) {
+          state.selectedRoomIdsForDelete.add(roomKey);
+        } else {
+          state.selectedRoomIdsForDelete.delete(roomKey);
+        }
+      });
+      row.appendChild(checkbox);
+    }
+
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `room-item ${room.id === state.currentRoomId ? "active" : ""}`;
     btn.innerHTML = `<span class="title">${escapeHtml(room.title || "새 대화")}</span><span class="meta">#${room.id}</span>`;
     btn.addEventListener("click", async () => {
+      if (state.roomDeleteMode) {
+        return;
+      }
       state.currentRoomId = room.id;
       await loadRoomHistory(room.id);
       toggleRoomDrawer(false);
       render();
     });
-    el.roomList.appendChild(btn);
+
+    row.appendChild(btn);
+    el.roomList.appendChild(row);
   });
+}
+
+function enterRoomDeleteMode() {
+  state.roomDeleteMode = true;
+  state.selectedRoomIdsForDelete.clear();
+  renderRoomDrawer();
+}
+
+function exitRoomDeleteMode() {
+  state.roomDeleteMode = false;
+  state.selectedRoomIdsForDelete.clear();
+  renderRoomDrawer();
+}
+
+async function onApplyDeleteSelectedRooms() {
+  if (state.selectedRoomIdsForDelete.size === 0) {
+    alert("삭제할 대화를 먼저 선택해 주세요.");
+    return;
+  }
+
+  const ok = confirm(`선택한 ${state.selectedRoomIdsForDelete.size}개의 대화를 삭제하시겠습니까?`);
+  if (!ok) {
+    return;
+  }
+
+  for (const roomIdKey of state.selectedRoomIdsForDelete) {
+    try {
+      await deleteRoomApi(roomIdKey, state.currentSession?.accessToken || "");
+    } catch {
+      // 백엔드 미구현 상태를 고려해 프론트 로컬 삭제로 fallback
+    }
+    state.localDeletedRoomIds.add(roomIdKey);
+  }
+
+  saveDeletedRoomIds(state.localDeletedRoomIds);
+  state.chatRooms = state.chatRooms.filter((room) => !state.selectedRoomIdsForDelete.has(String(room.id)));
+
+  if (state.currentRoomId && state.selectedRoomIdsForDelete.has(String(state.currentRoomId))) {
+    state.currentRoomId = state.chatRooms.length ? state.chatRooms[0].id : null;
+    if (state.currentRoomId) {
+      await loadRoomHistory(state.currentRoomId);
+    } else {
+      state.nodes = [];
+      state.selectedNodeId = null;
+    }
+  }
+
+  state.roomDeleteMode = false;
+  state.selectedRoomIdsForDelete.clear();
+  render();
 }
 
 async function onCreateRoom(event) {
@@ -517,7 +618,10 @@ async function onSendMessage(event) {
 
 async function refreshRoomsOnly() {
   const rooms = await getRoomsApi(state.currentSession?.accessToken || "");
-  state.chatRooms = Array.isArray(rooms) ? rooms.sort((a, b) => Number(b.id) - Number(a.id)) : [];
+  const visibleRooms = Array.isArray(rooms)
+    ? rooms.filter((room) => !state.localDeletedRoomIds.has(String(room.id)))
+    : [];
+  state.chatRooms = visibleRooms.sort((a, b) => Number(b.id) - Number(a.id));
 }
 
 async function openSettingsView() {
@@ -637,6 +741,10 @@ function renderTree() {
   el.treeListModeBtn?.classList.toggle("active", state.treeViewMode === "list");
   el.treeGraphModeBtn?.classList.toggle("active", state.treeViewMode === "graph");
   el.treeRoot.classList.toggle("graph-mode", state.treeViewMode === "graph");
+  el.graphZoomFooter?.classList.toggle("hidden", state.treeViewMode !== "graph");
+  if (el.graphZoomLevel) {
+    el.graphZoomLevel.textContent = `${Math.round(state.graphZoom * 100)}%`;
+  }
 
   if (state.nodes.length === 0) {
     const empty = document.createElement("p");
@@ -668,10 +776,16 @@ function renderTreeList() {
 function renderTreeGraph() {
   const graph = getTreeGraphLayout(state.nodes);
   const svgNS = "http://www.w3.org/2000/svg";
+  const treeTooltip = getOrCreateTreeTooltip();
+  const baseNodeRadius = 20;
+  const hoverNodeRadius = 23;
+  const selectedHoverNodeRadius = 25;
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "tree-graph-svg");
   svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
   svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  svg.style.width = `${Math.max(320, Math.round(graph.width * state.graphZoom))}px`;
+  svg.style.height = `${Math.max(220, Math.round(graph.height * state.graphZoom))}px`;
 
   graph.links.forEach((link) => {
     const line = document.createElementNS(svgNS, "line");
@@ -687,23 +801,94 @@ function renderTreeGraph() {
     const circle = document.createElementNS(svgNS, "circle");
     circle.setAttribute("cx", String(node.x));
     circle.setAttribute("cy", String(node.y));
-    circle.setAttribute("r", "14");
+    circle.setAttribute("r", String(baseNodeRadius));
     circle.setAttribute("class", node.id === state.selectedNodeId ? "tree-node-circle active" : "tree-node-circle");
+    const emphasizeNode = () => {
+      circle.classList.add("hovered");
+      circle.setAttribute("r", String(node.id === state.selectedNodeId ? selectedHoverNodeRadius : hoverNodeRadius));
+    };
+    const normalizeNode = () => {
+      circle.classList.remove("hovered");
+      circle.setAttribute("r", String(baseNodeRadius));
+    };
     circle.addEventListener("click", () => {
       state.selectedNodeId = node.id;
       render();
+    });
+    circle.addEventListener("mouseenter", (event) => {
+      emphasizeNode();
+      showTreeTooltip(treeTooltip, node.title, event);
+    });
+    circle.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
+    circle.addEventListener("mouseleave", () => {
+      normalizeNode();
+      hideTreeTooltip(treeTooltip);
     });
     svg.appendChild(circle);
 
     const label = document.createElementNS(svgNS, "text");
     label.setAttribute("x", String(node.x));
-    label.setAttribute("y", String(node.y + 4));
+    label.setAttribute("y", String(node.y + 5));
     label.setAttribute("class", "tree-node-label");
     label.textContent = node.title.length > 6 ? `${node.title.slice(0, 6)}...` : node.title;
+    label.style.pointerEvents = "auto";
+    label.style.cursor = "pointer";
+    label.addEventListener("mouseenter", (event) => {
+      emphasizeNode();
+      showTreeTooltip(treeTooltip, node.title, event);
+    });
+    label.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
+    label.addEventListener("mouseleave", () => {
+      normalizeNode();
+      hideTreeTooltip(treeTooltip);
+    });
     svg.appendChild(label);
   });
 
-  el.treeRoot.appendChild(svg);
+  const canvas = document.createElement("div");
+  canvas.className = "tree-graph-canvas";
+  canvas.appendChild(svg);
+  el.treeRoot.appendChild(canvas);
+}
+
+function getOrCreateTreeTooltip() {
+  if (!el.treeRoot) {
+    return null;
+  }
+  let tooltip = el.treeRoot.querySelector(".graph-tooltip");
+  if (!tooltip) {
+    tooltip = document.createElement("div");
+    tooltip.className = "graph-tooltip hidden";
+    el.treeRoot.appendChild(tooltip);
+  }
+  return tooltip;
+}
+
+function showTreeTooltip(tooltip, text, event) {
+  if (!tooltip || !el.treeRoot) {
+    return;
+  }
+  tooltip.textContent = text;
+  tooltip.classList.remove("hidden");
+  moveTreeTooltip(tooltip, event);
+}
+
+function moveTreeTooltip(tooltip, event) {
+  if (!tooltip || !el.treeRoot) {
+    return;
+  }
+  const rootRect = el.treeRoot.getBoundingClientRect();
+  const x = (event.clientX - rootRect.left) + 12 + el.treeRoot.scrollLeft;
+  const y = (event.clientY - rootRect.top) + 12 + el.treeRoot.scrollTop;
+  tooltip.style.left = `${x}px`;
+  tooltip.style.top = `${y}px`;
+}
+
+function hideTreeTooltip(tooltip) {
+  if (!tooltip) {
+    return;
+  }
+  tooltip.classList.add("hidden");
 }
 
 function renderTreeNode(node) {
@@ -712,6 +897,7 @@ function renderTreeNode(node) {
 
   const button = document.createElement("button");
   button.className = "node-btn";
+  button.title = node.title;
   if (node.id === state.selectedNodeId) {
     button.classList.add("active");
   }
@@ -895,6 +1081,33 @@ function summarizeRoomTitle(text) {
   return clean.length <= 24 ? clean : `${clean.slice(0, 24)}...`;
 }
 
+function changeGraphZoom(delta) {
+  if (state.treeViewMode !== "graph") {
+    return;
+  }
+  state.graphZoom = clamp(Number((state.graphZoom + delta).toFixed(2)), 0.6, 2.8);
+  renderTree();
+}
+
+function resetGraphZoom() {
+  state.graphZoom = 1;
+  renderTree();
+}
+
+function loadDeletedRoomIds() {
+  try {
+    const raw = localStorage.getItem("pathlearn_deleted_rooms");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.map((v) => String(v)) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDeletedRoomIds(ids) {
+  localStorage.setItem("pathlearn_deleted_rooms", JSON.stringify([...ids]));
+}
+
 function isAutoGeneratedRoomTitle(title) {
   const value = String(title || "").trim();
   if (!value) {
@@ -936,8 +1149,8 @@ function buildTree(nodes) {
 function getTreeGraphLayout(nodes) {
   const tree = buildTree(nodes);
   const roots = tree.filter((node) => node.parentId === null);
-  const xGap = 72;
-  const yGap = 74;
+  const xGap = 96;
+  const yGap = 98;
   const margin = 30;
   let cursorX = 0;
 
@@ -983,9 +1196,9 @@ function getTreeGraphLayout(nodes) {
       if (parent && target) {
         links.push({
           x1: parent.x,
-          y1: parent.y + 14,
+          y1: parent.y + 18,
           x2: target.x,
-          y2: target.y - 14
+          y2: target.y - 18
         });
       }
     });
@@ -1012,7 +1225,7 @@ function getTreeGraphLayout(nodes) {
     nodes: graphNodes,
     links,
     width,
-    height: margin * 2 + maxDepth * yGap + 26
+    height: margin * 2 + maxDepth * yGap + 36
   };
 }
 
