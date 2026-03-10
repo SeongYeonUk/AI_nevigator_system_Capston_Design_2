@@ -65,6 +65,11 @@ public class ChatService {
     }
 
     @Transactional
+    public void deleteRoom(Long roomId) {
+        chatRoomRepository.deleteById(roomId);
+    }
+
+    @Transactional
     public void updateRoomTitle(String authorization, Long roomId, String title) {
         validateAuthorization(authorization);
 
