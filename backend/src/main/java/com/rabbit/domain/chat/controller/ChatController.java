@@ -5,12 +5,22 @@ import com.rabbit.domain.chat.dto.ChatRequest;
 import com.rabbit.domain.chat.dto.ChatResponse;
 import com.rabbit.domain.chat.dto.ChatRoomResponse;
 import com.rabbit.domain.chat.dto.ConversationTreeResponse;
+import com.rabbit.domain.chat.dto.NodeInsightResponse;
 import com.rabbit.domain.chat.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import com.rabbit.domain.chat.dto.NodeInsightResponse;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
@@ -36,8 +46,11 @@ public class ChatController {
     }
 
     @DeleteMapping("/room/{roomId}")
-    public ResponseEntity<Void> deleteRoom(@PathVariable Long roomId) {
-        chatService.deleteRoom(roomId); // 방과 연결된 모든 데이터 삭제
+    public ResponseEntity<Void> deleteRoom(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId
+    ) {
+        chatService.deleteRoom(authorization, roomId);
         return ResponseEntity.ok().build();
     }
 
@@ -56,27 +69,21 @@ public class ChatController {
     }
 
     @PostMapping
-    public ResponseEntity<?> ask( // 👈 다양한 응답 타입(성공/실패)을 위해 <?>로 변경
-                                  @RequestHeader("Authorization") String authorization,
-                                  @RequestBody ChatRequest request
+    public ResponseEntity<?> ask(
+            @RequestHeader("Authorization") String authorization,
+            @RequestBody ChatRequest request
     ) {
         try {
-            // 1. 서비스에서 이제 String이 아닌 ChatResponse(답변 + 진짜ID)를 반환합니다
             ChatResponse response = chatService.ask(
                     authorization,
                     request.getRoomId(),
                     request.getParentId(),
                     request.getMessage()
             );
-
-            // 2. 생성된 DTO를 그대로 응답 바디에 담아 보냅니다
             return ResponseEntity.ok(response);
-
         } catch (IllegalArgumentException e) {
-            // 403 Forbidden 에러 메시지 반환
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
         } catch (Exception e) {
-            // 500 에러 메시지 반환
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("AI 응답 생성 중 오류가 발생했습니다: " + e.getMessage());
         }
@@ -98,12 +105,11 @@ public class ChatController {
         return chatService.getConversationTree(authorization, roomId);
     }
 
-
     @GetMapping("/node/{nodeId}/insight")
-    public NodeInsightResponse getNodeInsight(@RequestHeader("Authorization") String authorization,
-                                              @PathVariable Long nodeId) {
+    public NodeInsightResponse getNodeInsight(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long nodeId
+    ) {
         return chatService.getNodeInsight(nodeId);
     }
-
-
 }

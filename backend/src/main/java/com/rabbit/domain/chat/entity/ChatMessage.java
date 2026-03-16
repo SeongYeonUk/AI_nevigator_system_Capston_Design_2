@@ -39,12 +39,25 @@ public class ChatMessage {
     @Column(length = 120)
     private String level2Topic;
 
+    @Column(columnDefinition = "TEXT")
+    private String topicHints;
+
     private LocalDateTime createdAt = LocalDateTime.now();
 
     private int depth;
 
     @Builder
-    public ChatMessage(ChatMessage parent, ChatRoom chatRoom, SenderRole sender, String content, String nodeTitle, String level1Topic, String level2Topic, int depth) {
+    public ChatMessage(
+            ChatMessage parent,
+            ChatRoom chatRoom,
+            SenderRole sender,
+            String content,
+            String nodeTitle,
+            String level1Topic,
+            String level2Topic,
+            String topicHints,
+            int depth
+    ) {
         this.parent = parent;
         this.chatRoom = chatRoom;
         this.sender = sender;
@@ -52,6 +65,11 @@ public class ChatMessage {
         this.nodeTitle = nodeTitle;
         this.level1Topic = level1Topic;
         this.level2Topic = level2Topic;
+        this.topicHints = topicHints;
         this.depth = depth;
+    }
+
+    public void updateTopicHints(String topicHints) {
+        this.topicHints = topicHints;
     }
 }

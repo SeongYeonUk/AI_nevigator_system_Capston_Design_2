@@ -1,10 +1,20 @@
 package com.rabbit.domain.chat.Repository;
+
 import com.rabbit.domain.chat.entity.ChatMessage;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
 public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> {
-    // 특정 방의 모든 메시지를 시간순으로 가져오기
     List<ChatMessage> findByChatRoomIdOrderByCreatedAtAsc(Long roomId);
+
+    @Modifying
+    @Query("update ChatMessage m set m.parent = null where m.chatRoom.id = :roomId")
+    void clearParentByRoomId(@Param("roomId") Long roomId);
+
+    @Modifying
+    void deleteAllByChatRoomId(Long roomId);
 }

@@ -1,4 +1,4 @@
-﻿import { loginApi, signupApi } from "./api/auth-api.js";
+import { loginApi, signupApi } from "./api/auth-api.js";
 import {
   askChatApi,
   createRoomApi,
@@ -23,8 +23,7 @@ const state = {
   nodes: [],
   chatRooms: [],
   currentRoomId: null,
-  isRoomDrawerOpen: false,
-  localDeletedRoomIds: loadDeletedRoomIds()
+  isRoomDrawerOpen: false
 };
 
 const el = {
@@ -276,9 +275,7 @@ async function openAppView() {
 async function bootstrapChatRooms() {
   try {
     const rooms = await getRoomsApi(state.currentSession?.accessToken || "");
-    const visibleRooms = Array.isArray(rooms)
-      ? rooms.filter((room) => !state.localDeletedRoomIds.has(String(room.id)))
-      : [];
+    const visibleRooms = Array.isArray(rooms) ? rooms : [];
     state.chatRooms = visibleRooms.sort((a, b) => Number(b.id) - Number(a.id));
 
     if (state.chatRooms.length === 0) {
@@ -391,15 +388,8 @@ async function onApplyDeleteSelectedRooms() {
   }
 
   for (const roomIdKey of state.selectedRoomIdsForDelete) {
-    try {
-      await deleteRoomApi(roomIdKey, state.currentSession?.accessToken || "");
-    } catch {
-      // 백엔드 미구현 상태를 고려해 프론트 로컬 삭제로 fallback
-    }
-    state.localDeletedRoomIds.add(roomIdKey);
+    await deleteRoomApi(roomIdKey, state.currentSession?.accessToken || "");
   }
-
-  saveDeletedRoomIds(state.localDeletedRoomIds);
   state.chatRooms = state.chatRooms.filter((room) => !state.selectedRoomIdsForDelete.has(String(room.id)));
 
   if (state.currentRoomId && state.selectedRoomIdsForDelete.has(String(state.currentRoomId))) {
@@ -529,7 +519,6 @@ function roomIdSafe(roomId) {
 async function onSendMessage(event) {
   event.preventDefault();
 
-  // 1. 로그인 세션 체크
   if (!state.currentSession?.accessToken) {
     const shouldMoveToLogin = confirm("로그인을 하셔야 합니다. 로그인 창으로 이동하시겠습니까?");
     if (shouldMoveToLogin) {
@@ -543,6 +532,9 @@ async function onSendMessage(event) {
     return;
   }
 
+  let tempId = null;
+  const previousSelectedNodeId = state.selectedNodeId;
+
   try {
     if (!state.currentRoomId) {
       const roomId = await createRoomWithFallbackTitle();
@@ -550,12 +542,10 @@ async function onSendMessage(event) {
       await refreshRoomsOnly();
     }
 
-    // 1. 부모 노드 찾기 및 임시 ID 생성
     const parent = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
-    const tempId = `n_${Date.now().toString(36)}`; 
     const nextDepth = parent ? parent.depth + 1 : 0;
+    tempId = `n_${Date.now().toString(36)}`;
 
-    // 2. UI에 즉시 노드 추가 (반응성을 위해 임시 ID 사용)
     state.nodes.push({
       id: tempId,
       parentId: parent ? parent.id : null,
@@ -568,33 +558,12 @@ async function onSendMessage(event) {
     state.selectedNodeId = tempId;
     render();
 
-    // 3. 백엔드 API 호출
     const response = await askChatApi({
       roomId: state.currentRoomId,
       message: question,
-      parentId: parent ? parent.id : null, // 부모가 숫자가 된 상태면 숫자가 넘어감
+      parentId: parent ? parent.id : null,
       token: state.currentSession?.accessToken || ""
     });
-
-    // 4. [🌟 핵심] 임시 ID를 백엔드가 준 진짜 ID로 교체!
-    const target = state.nodes.find((n) => n.id === tempId);
-    if (target && response) {
-      target.aiAnswer = response.answer || "응답이 없습니다.";
-      if (response.nodeTitle && String(response.nodeTitle).trim()) {
-        target.title = String(response.nodeTitle).trim();
-      }
-      
-      if (response.newNodeId) {
-        const realNodeId = String(response.newNodeId);
-        console.log(`[연동성공] ID 교체: ${tempId} -> ${realNodeId}`);
-        target.id = realNodeId; // 진짜 DB ID로 업데이트
-        
-        // 현재 선택된 노드도 진짜 ID로 동기화
-        if (state.selectedNodeId === tempId) {
-          state.selectedNodeId = realNodeId;
-        }
-      }
-    }
 
     if (el.chatInput) {
       el.chatInput.value = "";
@@ -604,23 +573,19 @@ async function onSendMessage(event) {
     if (response?.newNodeId) {
       state.selectedNodeId = String(response.newNodeId);
     }
-    render(); // 서버 상태(자동 생성 노드 포함) 기준으로 다시 그리기
-  }catch (error) {
-    // 에러 발생 시 처리
-    const target = state.nodes.find((n) => n.id === state.selectedNodeId);
-    if (target && target.aiAnswer === "응답 생성 중...") {
-      target.aiAnswer = `응답 실패: ${toUiError(error)}`;
+    render();
+  } catch (error) {
+    if (tempId) {
+      state.nodes = state.nodes.filter((node) => node.id !== tempId);
+      state.selectedNodeId = previousSelectedNodeId;
     }
     setAuthMessage(`전송 실패: ${toUiError(error)}`, "error");
     render();
   }
 }
-
 async function refreshRoomsOnly() {
   const rooms = await getRoomsApi(state.currentSession?.accessToken || "");
-  const visibleRooms = Array.isArray(rooms)
-    ? rooms.filter((room) => !state.localDeletedRoomIds.has(String(room.id)))
-    : [];
+  const visibleRooms = Array.isArray(rooms) ? rooms : [];
   state.chatRooms = visibleRooms.sort((a, b) => Number(b.id) - Number(a.id));
 }
 
@@ -1094,20 +1059,6 @@ function resetGraphZoom() {
   renderTree();
 }
 
-function loadDeletedRoomIds() {
-  try {
-    const raw = localStorage.getItem("pathlearn_deleted_rooms");
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.map((v) => String(v)) : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDeletedRoomIds(ids) {
-  localStorage.setItem("pathlearn_deleted_rooms", JSON.stringify([...ids]));
-}
-
 function isAutoGeneratedRoomTitle(title) {
   const value = String(title || "").trim();
   if (!value) {
@@ -1308,6 +1259,8 @@ function escapeHtml(value) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
+
 
 
 

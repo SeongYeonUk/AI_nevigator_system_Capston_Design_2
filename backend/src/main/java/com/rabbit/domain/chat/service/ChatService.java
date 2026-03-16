@@ -1,3 +1,4 @@
+
 package com.rabbit.domain.chat.service;
 
 import com.rabbit.domain.chat.Repository.ChatMessageRepository;
@@ -14,15 +15,16 @@ import com.rabbit.domain.chat.enums.SenderRole;
 import com.rabbit.domain.user.repository.UserRepository;
 import com.rabbit.global.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -30,25 +32,33 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class ChatService {
 
-    private static final Pattern SUBTOPIC_PATTERN = Pattern.compile(
-            "(?i)(?:소주제(?:는)?|sub\\s*topic(?:s)?|level\\s*2)\\s*[:：]?\\s*([^\\n]+)");
+        private static final Pattern SUBTOPIC_PATTERN = Pattern.compile(
+            "(?i)(?:소주제|하위\\s*주제|sub\\s*topics?|level\\s*2)\\s*(?:[:\\-]|은|는|이야|야)?\\s*([^\\n]+)");
     private static final Pattern TAIL_PHRASE_PATTERN = Pattern.compile(
-            "(?:야|이야|입니다|이에요|예요|임|라고|라고요)$");
+            "(?:이야|야|입니다|이에요|이고|고)$");
     private static final Pattern SUBTOPIC_PREFIX_PATTERN = Pattern.compile(
-            "(?i)^\\s*(?:\\[AUTO_SUBTOPIC\\]|소주제|sub\\s*topic)\\s*[:：]?\\s*");
+            "(?i)^\\s*(?:\\[AUTO_SUBTOPIC\\]|소주제|sub\\s*topic)\\s*(?:[:\\-])?\\s*");
+    private static final Pattern HINT_SPLIT_PATTERN = Pattern.compile(
+            ",|/|\\||;|\\band\\b|그리고|및",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern FOLLOW_UP_PATTERN = Pattern.compile(
+            "(?i)(더\\s*자세히|자세히|구체적으로|예시|왜|어떻게|차이|비교|심화|추가\\s*설명|more|detail|example|why|compare)"
+    );
 
     private static final Set<String> STOP_WORDS = Set.of(
-            "대해", "알려줘", "설명", "설명해", "해주세요", "해줘",
-            "그리고", "그냥", "관련", "관해", "알려", "내용",
-            "이", "가", "은", "는", "을", "를", "에", "의"
+            "설명", "알려줘", "알려", "정의", "개념", "방법", "예시", "자세히", "관련", "정보",
+            "what", "how", "why", "tell", "about", "please", "more", "detail"
     );
 
     private final RabbitGuardService rabbitGuardService;
     private final ConversationTreeAiService conversationTreeAiService;
     private final ConversationTreePlannerService conversationTreePlannerService;
+    private final ContextSimilarityService contextSimilarityService;
     private final ChatRoomRepository chatRoomRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final JwtTokenProvider jwtTokenProvider;
@@ -65,8 +75,15 @@ public class ChatService {
     }
 
     @Transactional
-    public void deleteRoom(Long roomId) {
-        chatRoomRepository.deleteById(roomId);
+    public void deleteRoom(String authorization, Long roomId) {
+        validateAuthorization(authorization);
+
+        ChatRoom room = chatRoomRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
+
+        chatMessageRepository.clearParentByRoomId(roomId);
+        chatMessageRepository.deleteAllByChatRoomId(roomId);
+        chatRoomRepository.delete(room);
     }
 
     @Transactional
@@ -101,7 +118,6 @@ public class ChatService {
                 .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
 
         List<ChatMessage> roomHistory = chatMessageRepository.findByChatRoomIdOrderByCreatedAtAsc(roomId);
-
         ChatMessage requestedParent = (parentId != null)
                 ? chatMessageRepository.findById(parentId).orElse(null)
                 : null;
@@ -161,9 +177,24 @@ public class ChatService {
             return requestedParent;
         }
 
+        SubtopicDecision decision = classifyTargetAnchor(anchors, history, requestedParent, userMessage);
+        if (decision != null && decision.anchor() != null) {
+            ChatMessage chosen = chooseParentWithinAnchor(decision.anchor(), requestedParent, history, userMessage);
+            log.info("Chat routing selected subtopic='{}' reason='{}'", decision.anchor().topic(), decision.reason());
+            return chosen;
+        }
+
+        return requestedParent;
+    }
+    private SubtopicDecision classifyTargetAnchor(
+            List<SubtopicAnchor> anchors,
+            List<ChatMessage> history,
+            ChatMessage requestedParent,
+            String userMessage
+    ) {
         String normalizedMessage = normalizeForMatch(userMessage);
         if (normalizedMessage.isBlank()) {
-            return requestedParent;
+            return null;
         }
 
         SubtopicAnchor directMatch = anchors.stream()
@@ -171,91 +202,110 @@ public class ChatService {
                 .max(Comparator.comparingInt(anchor -> normalizeForMatch(anchor.topic()).length()))
                 .orElse(null);
         if (directMatch != null) {
-            // If the currently selected node is already under the matched subtopic branch, keep it.
-            if (requestedParent != null && isDescendantOf(requestedParent, directMatch.aiNode())) {
-                // Keep descending only when the new message clearly continues the current lower branch context.
-                if (isContinuationOfCurrentBranch(requestedParent, userMessage)) {
-                    return requestedParent;
-                }
-                return directMatch.aiNode();
-            }
-            // Otherwise, move the branch root to the matched level-2 node.
-            return directMatch.aiNode();
+            return new SubtopicDecision(directMatch, "direct-topic-match");
         }
 
-        ChatMessage keywordRouted = routeByKeywordOverlap(anchors, history, userMessage);
-        if (keywordRouted != null) {
-            if (requestedParent != null && isDescendantOf(requestedParent, keywordRouted)) {
-                if (isContinuationOfCurrentBranch(requestedParent, userMessage)) {
-                    return requestedParent;
-                }
-            }
-            return keywordRouted;
-        }
+        SubtopicAnchor aiSelectedAnchor = selectAnchorByAi(anchors, history, userMessage);
 
-        ChatMessage aiRouted = routeByAiSelection(anchors, userMessage);
-        if (aiRouted != null) {
-            if (requestedParent != null && isDescendantOf(requestedParent, aiRouted)) {
-                if (isContinuationOfCurrentBranch(requestedParent, userMessage)) {
-                    return requestedParent;
-                }
-            }
-            return aiRouted;
-        }
-
-        // No explicit/implicit reroute found: honor user-selected branch.
-        if (requestedParent != null && requestedParent.getDepth() >= 1) {
-            return requestedParent;
-        }
-
-        return requestedParent;
-    }
-
-    private ChatMessage routeByKeywordOverlap(List<SubtopicAnchor> anchors, List<ChatMessage> history, String userMessage) {
-        Set<String> messageKeywords = extractKeywords(userMessage);
-        if (messageKeywords.isEmpty()) {
-            return null;
-        }
-
-        int bestScore = 0;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        double secondScore = Double.NEGATIVE_INFINITY;
         SubtopicAnchor bestAnchor = null;
-        boolean tied = false;
+        String bestReason = null;
 
         for (SubtopicAnchor anchor : anchors) {
-            Set<String> branchKeywords = buildBranchKeywords(anchor, history);
-            if (branchKeywords.isEmpty()) {
-                continue;
-            }
+            boolean strongMatch = contextSimilarityService.stronglyMatchesTopic(userMessage, branchDescriptor(anchor));
+            double hintScore = contextSimilarityService.hintOverlapScore(userMessage, branchDescriptor(anchor));
+            double keywordScore = keywordOverlapScore(anchor, history, userMessage);
+            double similarityScore = contextSimilarityService.score(
+                    userMessage,
+                    branchDescriptor(anchor),
+                    buildBranchSimilaritySamples(anchor, history)
+            );
+            boolean aiSelected = aiSelectedAnchor != null && anchor.aiNode().getId().equals(aiSelectedAnchor.aiNode().getId());
 
-            int score = 0;
-            for (String keyword : messageKeywords) {
-                if (branchKeywords.contains(keyword)) {
-                    score++;
+            double totalScore = (strongMatch ? 8.0 : 0.0)
+                    + (hintScore * 2.8)
+                    + (keywordScore * 1.6)
+                    + (similarityScore * 6.5)
+                    + (aiSelected ? 4.5 : 0.0);
+
+            if (requestedParent != null && isDescendantOf(requestedParent, anchor.aiNode())) {
+                if (isContinuationOfCurrentBranch(requestedParent, userMessage)) {
+                    totalScore += 1.2;
+                } else {
+                    totalScore -= 1.5;
                 }
             }
 
-            if (score > bestScore) {
-                bestScore = score;
+            log.info(
+                    "Routing candidate topic='{}' strong={} hints={} keywords={} similarity={} aiSelected={} total={}",
+                    anchor.topic(), strongMatch, round(hintScore), round(keywordScore), round(similarityScore), aiSelected, round(totalScore)
+            );
+
+            if (totalScore > bestScore) {
+                secondScore = bestScore;
+                bestScore = totalScore;
                 bestAnchor = anchor;
-                tied = false;
-            } else if (score > 0 && score == bestScore) {
-                tied = true;
+                bestReason = buildReason(strongMatch, hintScore, keywordScore, similarityScore, aiSelected);
+            } else if (totalScore > secondScore) {
+                secondScore = totalScore;
             }
         }
 
-        if (bestAnchor == null || bestScore == 0 || tied) {
+        if (bestAnchor == null) {
             return null;
         }
-        return bestAnchor.aiNode();
+
+        double margin = bestScore - secondScore;
+        if (bestScore >= 2.2 && margin >= 1.0) {
+            return new SubtopicDecision(bestAnchor, bestReason + ", margin=" + round(margin));
+        }
+
+        return null;
+    }
+
+    private ChatMessage chooseParentWithinAnchor(
+            SubtopicAnchor anchor,
+            ChatMessage requestedParent,
+            List<ChatMessage> history,
+            String userMessage
+    ) {
+        if (requestedParent == null) {
+            return anchor.aiNode();
+        }
+        if (!isDescendantOf(requestedParent, anchor.aiNode())) {
+            return anchor.aiNode();
+        }
+        if (isContinuationOfCurrentBranch(requestedParent, userMessage)) {
+            return requestedParent;
+        }
+        return anchor.aiNode();
+    }
+
+    private double keywordOverlapScore(SubtopicAnchor anchor, List<ChatMessage> history, String userMessage) {
+        Set<String> messageKeywords = extractKeywords(userMessage);
+        if (messageKeywords.isEmpty()) {
+            return 0.0;
+        }
+
+        Set<String> branchKeywords = buildBranchKeywords(anchor, history);
+        if (branchKeywords.isEmpty()) {
+            return 0.0;
+        }
+
+        int matched = 0;
+        for (String keyword : messageKeywords) {
+            if (branchKeywords.contains(keyword)) {
+                matched++;
+            }
+        }
+        return matched / (double) Math.max(messageKeywords.size(), 1);
     }
 
     private Set<String> buildBranchKeywords(SubtopicAnchor anchor, List<ChatMessage> history) {
-        Set<String> keywords = new HashSet<>();
+        LinkedHashSet<String> keywords = new LinkedHashSet<>();
         keywords.addAll(extractKeywords(anchor.topic()));
-
-        if (history == null || history.isEmpty()) {
-            return keywords;
-        }
+        keywords.addAll(extractKeywords(anchor.hints()));
 
         for (ChatMessage message : history) {
             if (message.getSender() != SenderRole.USER || message.getDepth() < 2) {
@@ -264,16 +314,31 @@ public class ChatService {
             if (!isDescendantOf(message, anchor.aiNode())) {
                 continue;
             }
+            keywords.addAll(extractKeywords(message.getNodeTitle()));
+            keywords.addAll(extractKeywords(message.getContent()));
+        }
+        return keywords;
+    }
 
-            if (message.getNodeTitle() != null) {
-                keywords.addAll(extractKeywords(stripSystemPrefix(message.getNodeTitle())));
-            }
-            if (message.getContent() != null) {
-                keywords.addAll(extractKeywords(stripSystemPrefix(message.getContent())));
-            }
+    private List<String> buildBranchSimilaritySamples(SubtopicAnchor anchor, List<ChatMessage> history) {
+        List<String> samples = new ArrayList<>();
+        samples.add(anchor.topic());
+        if (anchor.hints() != null && !anchor.hints().isBlank()) {
+            samples.add(anchor.hints());
         }
 
-        return keywords;
+        for (ChatMessage message : history) {
+            if (!isDescendantOf(message, anchor.aiNode())) {
+                continue;
+            }
+            if (message.getSender() == SenderRole.USER) {
+                addIfNotBlank(samples, message.getNodeTitle());
+                addIfNotBlank(samples, stripSystemPrefix(message.getContent()));
+            } else {
+                addIfNotBlank(samples, stripSystemPrefix(message.getContent()));
+            }
+        }
+        return samples.stream().limit(12).toList();
     }
 
     private Set<String> extractKeywords(String text) {
@@ -281,7 +346,7 @@ public class ChatService {
             return Set.of();
         }
 
-        String normalized = text.toLowerCase()
+        String normalized = text.toLowerCase(Locale.ROOT)
                 .replaceAll("[^\\p{L}\\p{N}\\s]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
@@ -289,13 +354,10 @@ public class ChatService {
             return Set.of();
         }
 
-        Set<String> keywords = new HashSet<>();
+        LinkedHashSet<String> keywords = new LinkedHashSet<>();
         for (String token : normalized.split(" ")) {
             String cleaned = token.trim();
-            if (cleaned.length() < 2) {
-                continue;
-            }
-            if (STOP_WORDS.contains(cleaned)) {
+            if (cleaned.length() < 2 || STOP_WORDS.contains(cleaned)) {
                 continue;
             }
             keywords.add(cleaned);
@@ -323,78 +385,81 @@ public class ChatService {
             return false;
         }
 
-        String normalizedMessage = normalizeForMatch(userMessage);
-        if (normalizedMessage.isBlank()) {
-            return false;
+        if (looksLikeFollowUpQuestion(userMessage)) {
+            return true;
         }
 
         ChatMessage userNode = requestedParent.getSender() == SenderRole.AI && requestedParent.getParent() != null
                 ? requestedParent.getParent()
                 : requestedParent;
 
-        List<String> hints = new ArrayList<>();
+        List<String> contextSamples = new ArrayList<>();
         if (userNode != null) {
-            if (userNode.getNodeTitle() != null && !userNode.getNodeTitle().isBlank()) {
-                hints.add(userNode.getNodeTitle());
-            }
-            if (userNode.getLevel2Topic() != null && !userNode.getLevel2Topic().isBlank()) {
-                hints.add(userNode.getLevel2Topic());
-            }
-            if (userNode.getContent() != null && !userNode.getContent().isBlank()) {
-                hints.add(userNode.getContent());
-            }
+            addIfNotBlank(contextSamples, userNode.getNodeTitle());
+            addIfNotBlank(contextSamples, userNode.getLevel2Topic());
+            addIfNotBlank(contextSamples, userNode.getContent());
+        }
+        if (requestedParent.getSender() == SenderRole.AI) {
+            addIfNotBlank(contextSamples, requestedParent.getContent());
         }
 
-        for (String hint : hints) {
-            String normalizedHint = normalizeForMatch(stripSystemPrefix(hint));
-            if (normalizedHint.length() < 2) {
-                continue;
-            }
-            if (normalizedMessage.contains(normalizedHint)) {
+        String normalizedMessage = normalizeForMatch(userMessage);
+        for (String sample : contextSamples) {
+            String normalizedSample = normalizeForMatch(stripSystemPrefix(sample));
+            if (normalizedSample.length() >= 2 && normalizedMessage.contains(normalizedSample)) {
                 return true;
             }
         }
-        return false;
+
+        double relationshipScore = contextSimilarityService.relationshipScore(userMessage, contextSamples);
+        return relationshipScore >= 0.34;
     }
 
-    private ChatMessage routeByAiSelection(List<SubtopicAnchor> anchors, String userMessage) {
+    private boolean looksLikeFollowUpQuestion(String userMessage) {
+        return userMessage != null && FOLLOW_UP_PATTERN.matcher(userMessage).find();
+    }
+    private SubtopicAnchor selectAnchorByAi(List<SubtopicAnchor> anchors, List<ChatMessage> history, String userMessage) {
+        if (anchors.isEmpty()) {
+            return null;
+        }
         if (anchors.size() == 1) {
-            return anchors.get(0).aiNode();
+            return anchors.get(0);
         }
 
         try {
             StringBuilder options = new StringBuilder();
             for (int i = 0; i < anchors.size(); i++) {
-                options.append(i + 1).append(") ").append(anchors.get(i).topic()).append('\n');
+                SubtopicAnchor anchor = anchors.get(i);
+                options.append(i + 1)
+                        .append(") ")
+                        .append(anchor.topic())
+                        .append(" | hints: ")
+                        .append(defaultString(anchor.hints()))
+                        .append(" | samples: ")
+                        .append(String.join(" / ", buildBranchSimilaritySamples(anchor, history).stream().limit(4).toList()))
+                        .append('\n');
             }
 
-            String prompt = "User message:\n"
-                    + userMessage
-                    + "\n\nCandidate level-2 topics:\n"
-                    + options
-                    + "\nReturn exactly one candidate text, or NONE if no match.";
+            String prompt = "User question:\n" + userMessage
+                    + "\n\nCandidate subtopics:\n" + options
+                    + "\nReturn exactly one candidate text or NONE.";
             String selected = cleanModelOutput(conversationTreeAiService.selectBestSubtopic(prompt));
             if (selected.isBlank() || "NONE".equalsIgnoreCase(selected)) {
                 return null;
             }
 
             String normalizedSelected = normalizeForMatch(selected);
-            if (normalizedSelected.isBlank()) {
-                return null;
-            }
-
             for (SubtopicAnchor anchor : anchors) {
                 String normalizedTopic = normalizeForMatch(anchor.topic());
                 if (normalizedTopic.equals(normalizedSelected)
                         || normalizedTopic.contains(normalizedSelected)
                         || normalizedSelected.contains(normalizedTopic)) {
-                    return anchor.aiNode();
+                    return anchor;
                 }
             }
-        } catch (Exception ignored) {
-            // If AI routing fails, keep requested parent.
+        } catch (Exception e) {
+            log.debug("AI subtopic selection failed: {}", e.getMessage());
         }
-
         return null;
     }
 
@@ -420,15 +485,31 @@ public class ChatService {
             }
 
             String topic = extractSubtopicLabel(message);
+            String hints = message.getTopicHints();
+            if (hints == null || hints.isBlank()) {
+                hints = generateSubtopicHints(message.getLevel1Topic(), topic, collectSiblingTopics(history, message));
+                message.updateTopicHints(hints);
+            }
+
             String key = normalizeForMatch(topic);
             if (key.isBlank() || deduplicated.containsKey(key)) {
                 continue;
             }
-
-            deduplicated.put(key, new SubtopicAnchor(topic, aiNode));
+            deduplicated.put(key, new SubtopicAnchor(topic, hints, aiNode));
         }
 
         return new ArrayList<>(deduplicated.values());
+    }
+
+    private List<String> collectSiblingTopics(List<ChatMessage> history, ChatMessage current) {
+        List<String> siblings = new ArrayList<>();
+        for (ChatMessage message : history) {
+            if (message.getSender() != SenderRole.USER || message.getDepth() != 1 || message.getId().equals(current.getId())) {
+                continue;
+            }
+            siblings.add(extractSubtopicLabel(message));
+        }
+        return siblings;
     }
 
     private String extractSubtopicLabel(ChatMessage message) {
@@ -439,8 +520,7 @@ public class ChatService {
             return message.getNodeTitle().trim();
         }
 
-        String content = message.getContent() == null ? "" : message.getContent().trim();
-        String stripped = SUBTOPIC_PREFIX_PATTERN.matcher(content).replaceFirst("").trim();
+        String stripped = stripSystemPrefix(defaultString(message.getContent()));
         if (!stripped.isBlank()) {
             return trimToLength(stripped, 40);
         }
@@ -456,7 +536,7 @@ public class ChatService {
         if (text == null) {
             return "";
         }
-        return text.toLowerCase().replaceAll("[^\\p{L}\\p{N}]+", "");
+        return text.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", "");
     }
 
     private String cleanModelOutput(String text) {
@@ -478,12 +558,16 @@ public class ChatService {
     }
 
     private void createInitialLevelTwoSeedNodes(ChatRoom room, ChatMessage rootAiNode, String level1Topic, String userMessage) {
-        List<String> subtopics = extractInitialSubtopics(userMessage);
+        List<String> subtopics = conversationTreePlannerService.extractSeedSubtopics(userMessage);
+        if (subtopics.isEmpty()) {
+            subtopics = extractInitialSubtopics(userMessage);
+        }
         if (subtopics.isEmpty()) {
             return;
         }
 
         for (String subtopic : subtopics) {
+            String hints = generateSubtopicHints(level1Topic, subtopic, subtopics);
             ChatMessage seedUser = chatMessageRepository.save(ChatMessage.builder()
                     .chatRoom(room)
                     .parent(rootAiNode)
@@ -492,6 +576,7 @@ public class ChatService {
                     .nodeTitle(subtopic)
                     .level1Topic(level1Topic)
                     .level2Topic(subtopic)
+                    .topicHints(hints)
                     .depth(1)
                     .build());
 
@@ -516,31 +601,55 @@ public class ChatService {
         }
 
         String raw = matcher.group(1);
-        String normalized = raw.replaceAll("\\s+", " ").trim();
-        if (normalized.isBlank()) {
+        if (raw == null || raw.isBlank()) {
             return List.of();
         }
 
-        String[] split = normalized.split(",|/|\\||;|·|•|\\band\\b|및|그리고");
         LinkedHashSet<String> deduplicated = new LinkedHashSet<>();
-        for (String token : split) {
+        for (String token : HINT_SPLIT_PATTERN.split(raw)) {
             String cleaned = token == null ? "" : token.trim();
-            if (cleaned.isEmpty()) {
-                continue;
-            }
-
             cleaned = cleaned.replaceAll("^[-*\\d.\\s]+", "");
             cleaned = cleaned.replaceAll("[.!?]+$", "");
             cleaned = TAIL_PHRASE_PATTERN.matcher(cleaned).replaceAll("").trim();
-
             if (cleaned.length() >= 2) {
                 deduplicated.add(cleaned);
             }
         }
-
         return deduplicated.stream().limit(10).toList();
     }
 
+    private String generateSubtopicHints(String level1Topic, String subtopic, List<String> siblingTopics) {
+        try {
+            String prompt = "Root topic: " + defaultString(level1Topic)
+                    + "\nSubtopic: " + defaultString(subtopic)
+                    + "\nSibling subtopics: " + String.join(", ", siblingTopics)
+                    + "\nReturn only comma-separated concepts.";
+            String raw = conversationTreeAiService.generateSubtopicHints(prompt);
+            String normalized = normalizeHintList(raw);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        } catch (Exception e) {
+            log.debug("Topic hint generation failed for subtopic '{}': {}", subtopic, e.getMessage());
+        }
+        return subtopic;
+    }
+
+    private String normalizeHintList(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+
+        LinkedHashSet<String> deduplicated = new LinkedHashSet<>();
+        for (String token : HINT_SPLIT_PATTERN.split(raw)) {
+            String cleaned = cleanModelOutput(token);
+            cleaned = cleaned.replaceAll("^[-*\\d.\\s]+", "").trim();
+            if (cleaned.length() >= 2) {
+                deduplicated.add(cleaned);
+            }
+        }
+        return String.join(", ", deduplicated.stream().limit(10).toList());
+    }
     @Transactional(readOnly = true)
     public List<ChatHistoryResponse> getHistory(String authorization, Long roomId) {
         validateAuthorization(authorization);
@@ -592,16 +701,14 @@ public class ChatService {
 
             String nodeTitle = compactNodeTitle(message);
             if (message.getDepth() == 0 && level1Topic == null) {
-                level1Topic = message.getLevel1Topic();
-                if (level1Topic == null || level1Topic.isBlank()) {
+                level1Topic = defaultString(message.getLevel1Topic());
+                if (level1Topic.isBlank()) {
                     level1Topic = nodeTitle;
                 }
             }
 
-            if (message.getDepth() == 1 && message.getLevel2Topic() != null && !message.getLevel2Topic().isBlank()) {
-                level2Topics.add(message.getLevel2Topic());
-            } else if (message.getDepth() == 1) {
-                level2Topics.add(nodeTitle);
+            if (message.getDepth() == 1) {
+                level2Topics.add(defaultString(message.getLevel2Topic()).isBlank() ? nodeTitle : message.getLevel2Topic());
             }
 
             nodes.add(ConversationTreeNodeResponse.builder()
@@ -652,7 +759,7 @@ public class ChatService {
                 : node.getContent();
 
         return NodeInsightResponse.builder()
-                .title(titleSource.substring(0, Math.min(titleSource.length(), 8)))
+                .title(titleSource.substring(0, Math.min(titleSource.length(), 24)))
                 .depth(node.getDepth())
                 .parentPath(parentPath)
                 .progressRatio(ratio)
@@ -665,13 +772,11 @@ public class ChatService {
             return message.getNodeTitle().trim();
         }
 
-        String content = message.getContent() == null ? "" : message.getContent().trim();
+        String content = stripSystemPrefix(defaultString(message.getContent()));
         if (content.isBlank()) {
             return "Untitled";
         }
-
-        String clean = content.replaceAll("\\s+", " ");
-        return trimToLength(clean, 24);
+        return trimToLength(content.replaceAll("\\s+", " "), 24);
     }
 
     private String trimToLength(String text, int maxLength) {
@@ -710,6 +815,38 @@ public class ChatService {
         return rawToken.trim();
     }
 
-    private record SubtopicAnchor(String topic, ChatMessage aiNode) {
+    private void addIfNotBlank(List<String> values, String value) {
+        if (value != null && !value.isBlank()) {
+            values.add(value);
+        }
+    }
+
+    private String branchDescriptor(SubtopicAnchor anchor) {
+        if (anchor.hints() == null || anchor.hints().isBlank()) {
+            return anchor.topic();
+        }
+        return anchor.topic() + ", " + anchor.hints();
+    }
+
+    private String buildReason(boolean strongMatch, double hintScore, double keywordScore, double similarityScore, boolean aiSelected) {
+        return "strong=" + strongMatch
+                + ", hints=" + round(hintScore)
+                + ", keywords=" + round(keywordScore)
+                + ", similarity=" + round(similarityScore)
+                + ", aiSelected=" + aiSelected;
+    }
+
+    private double round(double value) {
+        return Math.round(value * 1000.0) / 1000.0;
+    }
+
+    private String defaultString(String text) {
+        return text == null ? "" : text.trim();
+    }
+
+    private record SubtopicAnchor(String topic, String hints, ChatMessage aiNode) {
+    }
+
+    private record SubtopicDecision(SubtopicAnchor anchor, String reason) {
     }
 }
