@@ -72,4 +72,19 @@ public class ChatMessage {
     public void updateTopicHints(String topicHints) {
         this.topicHints = topicHints;
     }
+
+    public void updateTreePlacement(ChatMessage parent, int depth) {
+        this.parent = parent;
+        this.depth = depth;
+    }
+
+    public void updateTreeMetadata(String nodeTitle, String level1Topic, String level2Topic) {
+        this.nodeTitle = nodeTitle;
+        this.level1Topic = level1Topic;
+        this.level2Topic = level2Topic;
+    }
+
+    public void updateDepth(int depth) {
+        this.depth = depth;
+    }
 }

@@ -51,6 +51,34 @@ public class ContextSimilarityService {
         }
     }
 
+    public double centroidScore(String query, List<String> samples) {
+        if (query == null || query.isBlank() || samples == null || samples.isEmpty()) {
+            return 0.0;
+        }
+
+        List<String> filtered = new ArrayList<>();
+        for (String sample : samples) {
+            if (sample != null && !sample.isBlank()) {
+                filtered.add(sample);
+            }
+        }
+        if (filtered.isEmpty()) {
+            return 0.0;
+        }
+
+        double heuristic = heuristicScore(query, filtered);
+        try {
+            float[] queryVector = embeddingModel.embed(query).content().vector();
+            float[] centroid = averagedEmbedding(filtered);
+            if (centroid.length == 0) {
+                return heuristic;
+            }
+            return (cosineSimilarity(queryVector, centroid) * 0.85) + (heuristic * 0.15);
+        } catch (Exception ignored) {
+            return heuristic;
+        }
+    }
+
     public double hintOverlapScore(String query, String topicDescriptor) {
         Set<String> queryTokens = tokenize(query);
         if (queryTokens.isEmpty()) {
@@ -120,6 +148,42 @@ public class ContextSimilarityService {
             }
         }
         return matched / (double) Math.max(queryTokens.size(), 1);
+    }
+
+    private float[] averagedEmbedding(List<String> samples) {
+        float[] sum = null;
+        int count = 0;
+
+        for (String sample : samples) {
+            if (sample == null || sample.isBlank()) {
+                continue;
+            }
+
+            float[] vector = embeddingModel.embed(sample).content().vector();
+            if (vector == null || vector.length == 0) {
+                continue;
+            }
+
+            if (sum == null) {
+                sum = new float[vector.length];
+            }
+            if (vector.length != sum.length) {
+                continue;
+            }
+
+            for (int i = 0; i < vector.length; i++) {
+                sum[i] += vector[i];
+            }
+            count++;
+        }
+
+        if (sum == null || count == 0) {
+            return new float[0];
+        }
+        for (int i = 0; i < sum.length; i++) {
+            sum[i] = sum[i] / count;
+        }
+        return sum;
     }
 
     private List<String> merge(String topic, List<String> samples) {

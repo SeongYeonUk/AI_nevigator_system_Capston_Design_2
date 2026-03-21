@@ -1,0 +1,7 @@
+backend/.gradle/
+backend/.gradle-local/
+backend/build/
+.gradle/
+.gradle-local/
+build/
+.idea/workspace.xml

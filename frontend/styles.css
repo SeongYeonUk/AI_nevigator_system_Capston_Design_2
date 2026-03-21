@@ -558,6 +558,21 @@ input:focus {
   color: var(--muted);
 }
 
+.tree-build-status {
+  font-size: 0.74rem;
+  font-weight: 700;
+  margin-left: 0.4rem;
+  white-space: nowrap;
+}
+
+.tree-build-status.processing {
+  color: var(--warning);
+}
+
+.tree-build-status.completed {
+  color: #89ffd8;
+}
+
 .mode-toggle {
   display: inline-flex;
   border: 1px solid var(--line);

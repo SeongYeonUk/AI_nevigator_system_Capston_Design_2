@@ -12,6 +12,10 @@ import { deleteAccountApi, getProfileApi, updateProfileApi } from "./api/user-ap
 import { CHAT_API_MODE } from "./config.js";
 import { clearSession, loadSession, saveSession } from "./state/session-store.js";
 
+if (typeof window !== "undefined") {
+  window.__PATHLEARN_MAIN_READY = false;
+}
+
 const state = {
   currentSession: loadSession(),
   currentView: "landing",
@@ -23,7 +27,9 @@ const state = {
   nodes: [],
   chatRooms: [],
   currentRoomId: null,
-  isRoomDrawerOpen: false
+  isRoomDrawerOpen: false,
+  treeBuildStatus: "completed",
+  pendingTreeBuildJobs: 0
 };
 
 const el = {
@@ -74,6 +80,7 @@ const el = {
   graphZoomResetBtn: document.getElementById("graphZoomResetBtn"),
   graphZoomLevel: document.getElementById("graphZoomLevel"),
   graphZoomFooter: document.getElementById("graphZoomFooter"),
+  treeBuildStatus: document.getElementById("treeBuildStatus"),
 
   branchTag: document.getElementById("branchTag"),
   chatFeed: document.getElementById("chatFeed"),
@@ -94,11 +101,23 @@ const el = {
 bindEvents();
 setupPanelResizers();
 render();
+if (typeof window !== "undefined") {
+  window.__PATHLEARN_MAIN_READY = true;
+}
 
 function bindEvents() {
-  el.openLoginBtn?.addEventListener("click", () => switchView("auth", "login"));
-  el.openSignupBtn?.addEventListener("click", () => switchView("auth", "signup"));
-  el.openHomeBtn?.addEventListener("click", () => switchView("landing"));
+  el.openLoginBtn?.addEventListener("click", () => {
+    switchView("auth", "login");
+    render();
+  });
+  el.openSignupBtn?.addEventListener("click", () => {
+    switchView("auth", "signup");
+    render();
+  });
+  el.openHomeBtn?.addEventListener("click", () => {
+    switchView("landing");
+    render();
+  });
   el.openSettingsBtn?.addEventListener("click", openSettingsView);
   el.openRoomsBtn?.addEventListener("click", async () => {
     if (!state.currentSession?.accessToken) {
@@ -194,6 +213,7 @@ async function onHeroStartClick() {
     const shouldMoveToLogin = confirm("로그인을 하셔야 합니다. 로그인 창으로 이동하시겠습니까?");
     if (shouldMoveToLogin) {
       switchView("auth", "login");
+      render();
     }
     return;
   }
@@ -207,6 +227,7 @@ async function onHeroDemoClick() {
     return;
   }
   switchView("auth", "login");
+  render();
 }
 
 async function onSignup(event) {
@@ -434,18 +455,25 @@ async function loadRoomHistory(roomId) {
 
   try {
     const tree = await getRoomTreeApi(roomId, token);
+    if (state.currentRoomId !== roomId) {
+      return false;
+    }
     if (tree && Array.isArray(tree.nodes)) {
       state.nodes = treeToNodes(tree.nodes);
       state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
-      return;
+      return true;
     }
   } catch (error) {
     console.warn("Tree API fallback to history API:", error);
   }
 
   const history = await getRoomHistoryApi(roomId, token);
+  if (state.currentRoomId !== roomId) {
+    return false;
+  }
   state.nodes = historyToNodes(history, roomId);
   state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
+  return true;
 }
 
 function treeToNodes(treeNodes) {
@@ -493,7 +521,7 @@ function historyToNodes(history, roomId) {
     }
 
     if (sender === "AI" && pendingUser) {
-      // 🌟 [핵심] 부모가 유저 메시지(81)라면, 그 유저에게 답변한 AI(82)를 부모 노드로 설정합니다.
+      // [핵심] 부모가 유저 메시지(81)라면, 그 유저에게 답변한 AI(82)를 부모 노드로 설정합니다.
       const realParentId = pendingUser.parentId ? userToAiMap[pendingUser.parentId] : null;
 
       nodes.push({
@@ -514,6 +542,172 @@ function historyToNodes(history, roomId) {
 
 function roomIdSafe(roomId) {
   return roomId == null ? "none" : String(roomId).replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function buildNodePlacementSignature(node) {
+  if (!node) {
+    return "";
+  }
+  const parentId = node.parentId == null ? "root" : String(node.parentId);
+  const depth = Number.isFinite(Number(node.depth)) ? Number(node.depth) : 0;
+  const title = String(node.title || "").trim();
+  return `${String(node.id)}|${parentId}|${depth}|${title}`;
+}
+
+function looksLikeSeedBootstrapQuestion(text) {
+  const raw = String(text || "");
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const hasMainTopicLabel =
+    /\uB300\uC8FC\uC81C/.test(raw) ||
+    /\b(main|major|top)\s*topic\b/i.test(normalized);
+
+  const hasSubTopicLabel =
+    /\uC18C\uC8FC\uC81C/.test(raw) ||
+    /\bsub\s*topics?\b/i.test(normalized) ||
+    /\blevel\s*2\b/i.test(normalized) ||
+    /\b(second|child)\s*level\b/i.test(normalized);
+
+  if (hasMainTopicLabel && hasSubTopicLabel) {
+    return true;
+  }
+
+  if (/\uC18C\uC8FC\uC81C\s*[:=]/.test(raw) || /\bsub\s*topics?\s*[:=]/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function applyAssistantResponseToTempNode({
+  tempId,
+  response,
+  question,
+  parentId,
+  nextDepth
+}) {
+  const persistedId = response?.newNodeId ? String(response.newNodeId) : tempId;
+  const resolvedParentId = response?.resolvedParentId != null
+    ? String(response.resolvedParentId)
+    : null;
+  const effectiveParentId = resolvedParentId || parentId || null;
+  const existingPersistedIndex = state.nodes.findIndex((node) => node.id === persistedId);
+  const index = state.nodes.findIndex((node) => node.id === tempId);
+
+  const nextNodeState = {
+    id: persistedId,
+    parentId: effectiveParentId,
+    title: response?.nodeTitle || summarizeTitle(question),
+    userQuestion: question,
+    aiAnswer: response?.answer || "응답 생성 중...",
+    depth: Number.isFinite(response?.depth) ? Number(response.depth) : nextDepth,
+    timestamp: Date.now()
+  };
+
+  if (index < 0) {
+    if (existingPersistedIndex >= 0) {
+      state.nodes[existingPersistedIndex] = {
+        ...state.nodes[existingPersistedIndex],
+        ...nextNodeState
+      };
+    } else {
+      state.nodes.push(nextNodeState);
+    }
+    state.selectedNodeId = persistedId;
+    return persistedId;
+  }
+
+  state.nodes[index] = {
+    ...state.nodes[index],
+    ...nextNodeState,
+    aiAnswer: response?.answer || state.nodes[index].aiAnswer
+  };
+
+  state.nodes.forEach((node) => {
+    if (node.parentId === tempId) {
+      node.parentId = persistedId;
+    }
+  });
+
+  if (state.selectedNodeId === tempId) {
+    state.selectedNodeId = persistedId;
+  }
+  return persistedId;
+}
+
+async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, options = {}) {
+  const expectSeedNodes = Boolean(options.expectSeedNodes);
+  const preferredId = preferredNodeId == null ? null : String(preferredNodeId);
+  const initialPreferredNode = preferredId
+    ? state.nodes.find((node) => node.id === preferredId)
+    : null;
+  const initialPreferredSignature = buildNodePlacementSignature(initialPreferredNode);
+  const startedAt = Date.now();
+  const maxDurationMs = expectSeedNodes ? 30000 : 20000;
+  let attempt = 0;
+  state.pendingTreeBuildJobs += 1;
+  state.treeBuildStatus = "processing";
+  renderTreeBuildStatus();
+
+  try {
+    while (Date.now() - startedAt <= maxDurationMs) {
+      const delayMs = attempt === 0 ? 0 : Math.min(700 + (attempt - 1) * 350, 2000);
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      try {
+        const applied = await loadRoomHistory(roomId);
+        if (!applied) {
+          return;
+        }
+        if (preferredId && state.nodes.some((node) => node.id === preferredId)) {
+          state.selectedNodeId = preferredId;
+        }
+        render();
+
+        if (preferredId) {
+          const latestPreferredNode = state.nodes.find((node) => node.id === preferredId) || null;
+          const latestPreferredSignature = buildNodePlacementSignature(latestPreferredNode);
+          const hasPlacementChanged =
+            initialPreferredSignature &&
+            latestPreferredSignature &&
+            latestPreferredSignature !== initialPreferredSignature;
+          if (hasPlacementChanged) {
+            return;
+          }
+        }
+
+        if (!expectSeedNodes) {
+          // 일반 질문도 트리 후처리 반영이 느릴 수 있어, 최대 시간까지 추적한다.
+        } else {
+          const hasPreferredDepthOneChild = preferredId
+            ? state.nodes.some((node) => node.parentId === preferredId && Number(node.depth) === 1)
+            : state.nodes.some((node) => Number(node.depth) === 1);
+          const hasDepthOneSeedNode = state.nodes.some(
+            (node) => Number(node.depth) === 1 && isAutoSubtopicSeedNode(node)
+          );
+          if (hasPreferredDepthOneChild || hasDepthOneSeedNode) {
+            return;
+          }
+        }
+      } catch (error) {
+        console.warn("Background tree sync failed:", error);
+        return;
+      }
+
+      attempt += 1;
+    }
+  } finally {
+    state.pendingTreeBuildJobs = Math.max(0, state.pendingTreeBuildJobs - 1);
+    if (state.pendingTreeBuildJobs === 0) {
+      state.treeBuildStatus = "completed";
+      renderTreeBuildStatus();
+    }
+  }
 }
 
 async function onSendMessage(event) {
@@ -544,11 +738,12 @@ async function onSendMessage(event) {
 
     const parent = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
     const nextDepth = parent ? parent.depth + 1 : 0;
+    const parentId = parent ? parent.id : null;
     tempId = `n_${Date.now().toString(36)}`;
 
     state.nodes.push({
       id: tempId,
-      parentId: parent ? parent.id : null,
+      parentId,
       title: summarizeTitle(question),
       userQuestion: question,
       aiAnswer: "응답 생성 중...",
@@ -561,7 +756,7 @@ async function onSendMessage(event) {
     const response = await askChatApi({
       roomId: state.currentRoomId,
       message: question,
-      parentId: parent ? parent.id : null,
+      parentId,
       token: state.currentSession?.accessToken || ""
     });
 
@@ -569,11 +764,17 @@ async function onSendMessage(event) {
       el.chatInput.value = "";
     }
 
-    await loadRoomHistory(state.currentRoomId);
-    if (response?.newNodeId) {
-      state.selectedNodeId = String(response.newNodeId);
-    }
+    const persistedNodeId = applyAssistantResponseToTempNode({
+      tempId,
+      response,
+      question,
+      parentId,
+      nextDepth
+    });
     render();
+    syncRoomHistoryInBackground(state.currentRoomId, persistedNodeId, {
+      expectSeedNodes: looksLikeSeedBootstrapQuestion(question)
+    });
   } catch (error) {
     if (tempId) {
       state.nodes = state.nodes.filter((node) => node.id !== tempId);
@@ -710,6 +911,7 @@ function renderTree() {
   if (el.graphZoomLevel) {
     el.graphZoomLevel.textContent = `${Math.round(state.graphZoom * 100)}%`;
   }
+  renderTreeBuildStatus();
 
   if (state.nodes.length === 0) {
     const empty = document.createElement("p");
@@ -731,6 +933,17 @@ function renderTree() {
   if (el.nodeCount) {
     el.nodeCount.textContent = `${state.nodes.length} Nodes`;
   }
+}
+
+function renderTreeBuildStatus() {
+  if (!el.treeBuildStatus) {
+    return;
+  }
+
+  const isProcessing = state.treeBuildStatus === "processing";
+  el.treeBuildStatus.textContent = isProcessing ? "트리 구성 진행중..." : "트리 구성 완료됨";
+  el.treeBuildStatus.classList.toggle("processing", isProcessing);
+  el.treeBuildStatus.classList.toggle("completed", !isProcessing);
 }
 
 function renderTreeList() {
@@ -1259,6 +1472,7 @@ function escapeHtml(value) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
 
 
 
