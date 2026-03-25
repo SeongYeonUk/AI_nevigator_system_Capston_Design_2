@@ -1,6 +1,9 @@
 
 package com.rabbit.domain.chat.service;
-
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
 import com.rabbit.domain.chat.Repository.ChatMessageRepository;
 import com.rabbit.domain.chat.Repository.ChatRoomRepository;
 import com.rabbit.domain.chat.dto.ChatHistoryResponse;
@@ -22,16 +25,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -141,61 +135,61 @@ public class ChatService {
 
     @Transactional
     public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage) {
+        // 1. 권한 및 대화방 검증
         validateAuthorization(authorization);
 
         ChatRoom room = chatRoomRepository.findById(roomId)
                 .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
 
+        // 2. 요청받은 부모 노드 (아직 진짜 부모인지 모름, 임시 위치)
         ChatMessage requestedParent = (parentId != null)
                 ? chatMessageRepository.findById(parentId).orElse(null)
                 : null;
 
-        int currentDepth = (requestedParent == null) ? 0 : requestedParent.getDepth() + 1;
+        int initialDepth = (requestedParent == null) ? 0 : requestedParent.getDepth() + 1;
         String fallbackNodeTitle = trimToLength(defaultString(userMessage).replaceAll("\\s+", " "), 24);
-        String fallbackLevel1Topic = (requestedParent != null && requestedParent.getParent() != null)
-                ? defaultString(requestedParent.getParent().getLevel1Topic())
-                : fallbackNodeTitle;
-        if (fallbackLevel1Topic.isBlank()) {
-            fallbackLevel1Topic = fallbackNodeTitle.isBlank() ? "Root Topic" : fallbackNodeTitle;
-        }
-        String fallbackLevel2Topic = (requestedParent != null && requestedParent.getParent() != null)
-                ? defaultString(requestedParent.getParent().getLevel2Topic())
-                : "Subtopic";
-        if (fallbackLevel2Topic.isBlank()) {
-            fallbackLevel2Topic = "Subtopic";
-        }
 
+        // 3. 유저 질문 임시 저장
         ChatMessage userSaved = chatMessageRepository.save(ChatMessage.builder()
                 .chatRoom(room)
                 .parent(requestedParent)
                 .sender(SenderRole.USER)
                 .content(userMessage)
                 .nodeTitle(fallbackNodeTitle)
-                .level1Topic(fallbackLevel1Topic)
-                .level2Topic(fallbackLevel2Topic)
-                .depth(currentDepth)
+                .depth(initialDepth)
                 .build());
 
+        // 🌟 4. [초고속 처리] AI 답변만 즉시 생성!
         String aiAnswer = rabbitGuardService.chat(roomId, userMessage);
 
+        // 5. AI 답변 임시 저장
         ChatMessage aiSaved = chatMessageRepository.save(ChatMessage.builder()
                 .chatRoom(room)
                 .parent(userSaved)
                 .sender(SenderRole.AI)
                 .content(aiAnswer)
-                .depth(currentDepth)
+                .depth(initialDepth)
                 .build());
 
+        // =====================================================================
+        // 🗑️ 기존에 있던 무거운 라우팅 로직(history 가져오고, GPT 부르고 등등)은 전부 삭제!
+        // =====================================================================
+
+        // 🌟 6. [핵심] 무거운 트리 정렬 및 기획 작업은 백그라운드 스레드로 던집니다!
+        // 이미 만들어두신 완벽한 비동기 메서드를 여기서 호출합니다.
         triggerTreePostProcessingAsync(roomId, parentId, userMessage, userSaved.getId(), aiSaved.getId());
 
+        log.info("⚡ [초고속 응답] AI 답변 즉시 반환 완료. 트리의 올바른 위치는 백그라운드에서 계산됩니다.");
+
+        // 7. 프론트엔드에 즉시 응답 반환 (일단 화면에 띄우기 위해 임시 정보 기준 반환)
         return ChatResponse.builder()
                 .answer(aiAnswer)
                 .newNodeId(aiSaved.getId())
                 .resolvedParentId(requestedParent != null ? requestedParent.getId() : null)
                 .nodeTitle(fallbackNodeTitle)
-                .level1Topic(fallbackLevel1Topic)
-                .level2Topic(fallbackLevel2Topic)
-                .depth(currentDepth)
+                .level1Topic("") // 나중에 백그라운드에서 채워짐
+                .level2Topic("") // 나중에 백그라운드에서 채워짐
+                .depth(initialDepth)
                 .build();
     }
 
@@ -252,15 +246,20 @@ public class ChatService {
         ChatMessage requestedParent = (requestedParentId != null)
                 ? chatMessageRepository.findById(requestedParentId).orElse(null)
                 : null;
-        ParentResolution parentResolution = resolveParentNodeForIntent(requestedParent, historyBeforeCurrent, userMessage);
-        ChatMessage parentNode = parentResolution.parentNode();
+
+        String aiAnswer = aiSaved.getContent();
+        String aiHint = aiAnswer.substring(0, Math.min(aiAnswer.length(), 100)).replace("\n", " ");
+        String contextForRouting = userMessage + " (AI 답변 힌트: " + aiHint + ")";
+
+        // userMessage 대신 contextForRouting을 넣어줍니다!
+        ChatMessage parentNode = resolveParentNodeForIntent(historyBeforeCurrent, contextForRouting);
         int currentDepth = (parentNode == null) ? 0 : parentNode.getDepth() + 1;
 
         ConversationTreePlannerService.TreePlan treePlan = conversationTreePlannerService.planNode(
                 historyBeforeCurrent,
                 parentNode,
                 currentDepth,
-                userMessage
+                contextForRouting
         );
 
         userSaved.updateTreePlacement(parentNode, currentDepth);
@@ -272,122 +271,110 @@ public class ChatService {
             createInitialLevelTwoSeedNodes(room, aiSaved, treePlan.level1Topic(), userMessage);
         }
 
-        if (parentResolution.needsReevaluation()) {
-            triggerLowConfidenceReevaluationAsync(roomId, requestedParentId, userMessage, userMessageId, aiMessageId);
-        }
+        // applyTreePostProcessing 메서드 안에 임시 로그 추가
+        log.info("💡 최종 결정된 부모 ID: {}, 새 노드의 Depth: {}",
+                parentNode != null ? parentNode.getId() : "null", currentDepth);
     }
 
-    private ParentResolution resolveParentNodeForIntent(ChatMessage requestedParent, List<ChatMessage> history, String userMessage) {
-        if (history == null || history.isEmpty()) {
-            return new ParentResolution(requestedParent, false);
-        }
+    private ChatMessage resolveParentNodeForIntent(List<ChatMessage> history, String userMessage) {
+        if (history == null || history.isEmpty()) return null;
+
+        ChatMessage lastAiNode = history.stream()
+                .filter(m -> m.getSender() == SenderRole.AI)
+                .max(Comparator.comparing(ChatMessage::getCreatedAt))
+                .orElse(null);
 
         List<SubtopicAnchor> anchors = findSubtopicAnchors(history);
-        if (anchors.isEmpty()) {
-            return new ParentResolution(requestedParent, false);
-        }
 
-        SubtopicRanking ranking = rankSubtopicAnchors(anchors, history, userMessage);
-        if (ranking == null || ranking.bestAnchor() == null) {
-            return new ParentResolution(requestedParent, false);
-        }
+        // 🌟 [추가] 현재 대화 중인 기둥(Anchor)이 무엇인지 먼저 찾습니다.
+        SubtopicAnchor currentAnchor = findAnchorForAiNode(lastAiNode, anchors);
 
-        if (isConfidentRouting(ranking)) {
-            ChatMessage chosen = chooseParentWithinAnchor(ranking.bestAnchor(), requestedParent, history, userMessage);
-            log.info("Chat routing selected subtopic='{}' reason='{}'", ranking.bestAnchor().topic(),
-                    ranking.reason() + ", margin=" + round(ranking.margin()));
-            return new ParentResolution(chosen, false);
-        }
+        // 🌟 [수정] 인자를 4개(anchors, history, userMessage, currentAnchor) 보냅니다.
+        SubtopicAnchor bestAnchor = rankSubtopicAnchors(anchors, history, userMessage, currentAnchor);
 
-        if (isReevaluationCandidate(ranking)) {
-            log.info(
-                    "Chat routing low-confidence. preserving requested parent and scheduling reevaluation. topic='{}' score={} margin={} reason='{}'",
-                    ranking.bestAnchor().topic(), round(ranking.bestScore()), round(ranking.margin()), ranking.reason()
-            );
-            return new ParentResolution(requestedParent, true);
-        }
-
-        return new ParentResolution(requestedParent, false);
+        if (bestAnchor == null) return lastAiNode;
+        return chooseParentWithinAnchor(bestAnchor, lastAiNode, history, userMessage);
     }
 
-    private SubtopicRanking rankSubtopicAnchors(
+    // (헬퍼 메서드 추가) 특정 AI 노드가 속한 앵커 기둥 찾기
+    // (헬퍼 메서드 추가) 특정 AI 노드가 속한 앵커 기둥 찾기
+    private SubtopicAnchor findAnchorForAiNode(ChatMessage aiNode, List<SubtopicAnchor> anchors) {
+        if (aiNode == null || anchors == null || anchors.isEmpty()) return null;
+        for (SubtopicAnchor anchor : anchors) {
+            if (isDescendantOf(aiNode, anchor.aiNode())) {
+                return anchor;
+            }
+        }
+        return null;
+    }
+
+    // 🌟 밸런스 패치 완료된 예선전 채점 로직
+    private SubtopicAnchor rankSubtopicAnchors(
             List<SubtopicAnchor> anchors,
             List<ChatMessage> history,
-            String userMessage
+            String userMessage,
+            SubtopicAnchor currentActiveAnchor
     ) {
-        String normalizedMessage = normalizeForMatch(userMessage);
-        if (normalizedMessage.isBlank()) {
+        if (anchors == null || anchors.isEmpty()) {
             return null;
         }
 
-        SubtopicAnchor directMatch = anchors.stream()
-                .filter(anchor -> containsTopic(normalizedMessage, anchor.topic()))
-                .max(Comparator.comparingInt(anchor -> normalizeForMatch(anchor.topic()).length()))
-                .orElse(null);
-        if (directMatch != null) {
-            return new SubtopicRanking(directMatch, "direct-topic-match", 100.0, 100.0);
+        // 🚨 "데드락이 뭐야?"에서 "뭐야"가 지워져도 원본 텍스트를 살려서 무조건 채점을 돌리게 만듭니다.
+        String normalizedMessage = normalizeForMatch(userMessage);
+        if (normalizedMessage.isBlank()) {
+            normalizedMessage = userMessage.toLowerCase(Locale.ROOT).trim();
         }
 
-        QuestionIntent intent = detectQuestionIntent(userMessage);
-        SubtopicAnchor aiSelectedAnchor = selectAnchorByAi(anchors, history, userMessage);
+        // 🌟 1. GPT 심판장에게 먼저 대주제(기둥)를 고르게 합니다.
+        SubtopicAnchor aiSelectedAnchor = selectAnchorByAi(anchors, history, userMessage, currentActiveAnchor);
 
         double bestScore = Double.NEGATIVE_INFINITY;
-        double secondScore = Double.NEGATIVE_INFINITY;
         SubtopicAnchor bestAnchor = null;
-        String bestReason = null;
 
         for (SubtopicAnchor anchor : anchors) {
-            boolean strongMatch = contextSimilarityService.stronglyMatchesTopic(userMessage, branchDescriptor(anchor));
+            boolean isDirectTopicMatch = containsTopic(normalizedMessage, anchor.topic());
+
+            // 🚨 키워드 추출 시 STOP_WORDS 때문에 다 지워지는 걸 방지하기 위해 원본 메시지도 넘김
             double hintScore = contextSimilarityService.hintOverlapScore(userMessage, branchDescriptor(anchor));
+
+            // 키워드 겹침 점수 (너무 엄격하지 않게)
             double keywordScore = keywordOverlapScore(anchor, history, userMessage);
+            if (keywordScore == 0.0 && isDirectTopicMatch) {
+                keywordScore = 1.0;
+            }
+
             double similarityScore = contextSimilarityService.score(
                     userMessage,
                     branchDescriptor(anchor),
                     buildAnchorProfileSamples(anchor, history)
             );
             double centroidScore = centroidAnchorScore(anchor, history, userMessage);
-            double questionTypeTermScore = questionTypeAndTermScore(intent, anchor, history, userMessage);
-            boolean aiSelected = aiSelectedAnchor != null && anchor.aiNode().getId().equals(aiSelectedAnchor.aiNode().getId());
 
-            double totalScore = (strongMatch ? 8.0 : 0.0)
-                    + (hintScore * 2.6)
-                    + (keywordScore * 1.5)
-                    + (similarityScore * 5.8)
-                    + (centroidScore * 4.0)
-                    + (questionTypeTermScore * 2.2)
-                    + (aiSelected ? 3.8 : 0.0);
+            boolean isAiSelected = aiSelectedAnchor != null && anchor.aiNode().getId().equals(aiSelectedAnchor.aiNode().getId());
 
-            log.info(
-                    "Routing candidate topic='{}' strong={} hints={} keywords={} similarity={} centroid={} qTypeTerm={} aiSelected={} total={}",
-                    anchor.topic(), strongMatch, round(hintScore), round(keywordScore), round(similarityScore),
-                    round(centroidScore), round(questionTypeTermScore), aiSelected, round(totalScore)
-            );
+            // 🌟 [핵심 로직] UI 포커스 가중치 계산
+            double focusWeight = 0.0;
+            if (currentActiveAnchor != null && anchor.aiNode().getId().equals(currentActiveAnchor.aiNode().getId())) {
+                focusWeight = 30.0;
+                log.info("📍 UI 포커스 감지: '{}' 기둥에 강력 가중치 부여", anchor.topic());
+            }
+
+            double totalScore = (isDirectTopicMatch ? 20.0 : 0.0)
+                    + (hintScore * 5.0)
+                    + (similarityScore * 10.0)
+                    + (isAiSelected ? 200.0 : 0.0) // GPT의 논리적 판단을 절대적으로 신뢰
+                    + focusWeight;
+
+            log.info("Routing candidate topic='{}' similarity={} centroid={} aiSelected={} total={}",
+                    anchor.topic(), round(similarityScore), round(centroidScore), isAiSelected, round(totalScore));
 
             if (totalScore > bestScore) {
-                secondScore = bestScore;
                 bestScore = totalScore;
                 bestAnchor = anchor;
-                bestReason = buildReason(
-                        strongMatch,
-                        hintScore,
-                        keywordScore,
-                        similarityScore,
-                        centroidScore,
-                        questionTypeTermScore,
-                        aiSelected,
-                        intent
-                );
-            } else if (totalScore > secondScore) {
-                secondScore = totalScore;
             }
         }
 
-        if (bestAnchor == null) {
-            return null;
-        }
-
-        double margin = Double.isFinite(secondScore) ? bestScore - secondScore : bestScore;
-        return new SubtopicRanking(bestAnchor, bestReason, bestScore, margin);
+        return bestAnchor != null ? bestAnchor : anchors.get(0);
     }
 
     private boolean isConfidentRouting(SubtopicRanking ranking) {
@@ -404,6 +391,7 @@ public class ChatService {
                 && ranking.margin() >= REEVALUATION_MARGIN_THRESHOLD;
     }
 
+    /*
     private void triggerLowConfidenceReevaluationAsync(
             Long roomId,
             Long requestedParentId,
@@ -429,6 +417,9 @@ public class ChatService {
         });
     }
 
+     */
+
+    /*
     private void applyLowConfidenceReevaluation(
             Long roomId,
             Long requestedParentId,
@@ -498,6 +489,8 @@ public class ChatService {
                 reevaluatedDepth
         );
     }
+
+     */
 
     private boolean hasDescendantMessages(List<ChatMessage> roomHistory, ChatMessage aiNode, Long userMessageId, Long aiMessageId) {
         if (roomHistory == null || roomHistory.isEmpty() || aiNode == null) {
@@ -699,43 +692,27 @@ public class ChatService {
     }
 
     private ChatMessage chooseParentWithinAnchor(
-            SubtopicAnchor anchor,
-            ChatMessage requestedParent,
-            List<ChatMessage> history,
-            String userMessage
-    ) {
+            SubtopicAnchor anchor, ChatMessage requestedParent, List<ChatMessage> history, String userMessage) {
+
+        // 🌟 [비용 절감 핵심 로직 복구] 민교님 말씀대로 토큰을 아끼기 위해 정규식 문지기를 부활시킵니다!
+        // 단, 오작동을 막기 위해 뒤에 붙은 "(AI 답변 힌트:...)" 부분을 잘라내고 순수 사용자 질문만 검사합니다.
+        String pureUserMessage = userMessage.replaceAll("\\(AI 답변 힌트:.*\\)", "").trim();
+
+        // 순수 질문에서 명백한 형제 이동 의도("다음 거", "다른 거")가 보이면 바로 LLM 건너뛰고 처리 (비용 Save 💰)
+        if (isSeriesSiblingRequest(requestedParent, pureUserMessage) || hasExplicitSiblingIntent(pureUserMessage)) {
+            log.info("⚡ 비용 절감: 정규식 문지기가 명확한 형제 이동(Sibling)을 감지했습니다.");
+            return resolveSiblingParent(requestedParent, anchor.aiNode());
+        }
+
+        // 정규식으로 판별하기 어려운 복잡한 질문만 똑똑한 하이브리드 엔진(LLM + Vector)으로 넘깁니다.
         ChatMessage anchorBestParent = selectRelevantParentWithinAnchor(anchor, history, userMessage);
 
-        if (requestedParent == null) {
-            return anchorBestParent;
-        }
-        if (!isDescendantOf(requestedParent, anchor.aiNode())) {
-            return anchorBestParent;
-        }
-
-        if (isSeriesSiblingRequest(requestedParent, userMessage)) {
-            return resolveSiblingParent(requestedParent, anchor.aiNode());
-        }
-
-        if (hasExplicitSiblingIntent(userMessage)) {
-            return resolveSiblingParent(requestedParent, anchor.aiNode());
-        }
-
-        if (isContinuationOfCurrentBranch(requestedParent, userMessage)
-                || isLikelyChildExpansion(requestedParent, userMessage)) {
-            if (anchorBestParent != null
-                    && isDescendantOf(anchorBestParent, requestedParent)
-                    && anchorBestParent.getDepth() >= requestedParent.getDepth()) {
-                return anchorBestParent;
-            }
-            return requestedParent;
-        }
-
-        if (shouldRebalanceParent(anchorBestParent, requestedParent, history, userMessage)) {
+        if (anchorBestParent != null) {
+            log.info("🤖 AI 라우팅 100% 신뢰 적용! 최종 부모: {}", anchorBestParent.getId());
             return anchorBestParent;
         }
 
-        return requestedParent;
+        return requestedParent != null ? requestedParent : anchor.aiNode();
     }
 
     private boolean shouldRebalanceParent(
@@ -777,41 +754,63 @@ public class ChatService {
                 && left.getId().equals(right.getId());
     }
 
+    //
     private ChatMessage selectRelevantParentWithinAnchor(SubtopicAnchor anchor, List<ChatMessage> history, String userMessage) {
-        if (anchor == null || anchor.aiNode() == null) {
-            return null;
-        }
+        if (anchor == null || anchor.aiNode() == null) return null;
 
-        ChatMessage anchorAiNode = anchor.aiNode();
         List<ChatMessage> candidates = collectAnchorParentCandidates(anchor, history);
-        if (candidates.isEmpty()) {
-            return anchorAiNode;
-        }
+        if (candidates.isEmpty()) return anchor.aiNode();
 
-        double anchorScore = computeParentRelevanceScore(anchorAiNode, history, userMessage);
-        double bestScore = anchorScore;
-        ChatMessage bestParent = anchorAiNode;
+        ChatMessage lastAiNode = history.stream()
+                .filter(m -> m.getSender() == SenderRole.AI && isDescendantOf(m, anchor.aiNode()))
+                .max(Comparator.comparing(ChatMessage::getCreatedAt))
+                .orElse(anchor.aiNode());
 
+        record ScoredNode(ChatMessage node, double score) {}
+        List<ScoredNode> scoredNodes = new ArrayList<>();
         for (ChatMessage candidate : candidates) {
-            double candidateScore = computeParentRelevanceScore(candidate, history, userMessage);
-            if (candidateScore > bestScore) {
-                bestScore = candidateScore;
-                bestParent = candidate;
-            }
+            double score = computeParentRelevanceScore(candidate, history, userMessage);
+            scoredNodes.add(new ScoredNode(candidate, score));
         }
 
-        if (bestParent == null) {
-            return anchorAiNode;
+        scoredNodes.sort((a, b) -> Double.compare(b.score(), a.score()));
+        Set<Long> topIds = new HashSet<>();
+        List<ChatMessage> finalCandidates = new ArrayList<>();
+
+        for (ScoredNode sn : scoredNodes) {
+            if (finalCandidates.size() >= 5) break;
+            finalCandidates.add(sn.node());
+            topIds.add(sn.node().getId());
         }
-        if (bestParent.getId() != null
-                && anchorAiNode.getId() != null
-                && bestParent.getId().equals(anchorAiNode.getId())) {
-            return anchorAiNode;
+
+        ChatMessage ancestor = lastAiNode;
+        while (ancestor != null && finalCandidates.size() < 10) {
+            if (!topIds.contains(ancestor.getId())) {
+                finalCandidates.add(ancestor);
+                topIds.add(ancestor.getId());
+            }
+            ancestor = getRealParent(ancestor);
+            if (ancestor != null && ancestor.getDepth() == 0) break;
         }
-        if (bestScore >= anchorScore + ANCHOR_PARENT_SCORE_GAP_THRESHOLD) {
-            return bestParent;
-        }
-        return anchorAiNode;
+
+        // 🌟 최상위 개념부터 하위 개념으로(Top-down) 정렬
+        finalCandidates.sort(Comparator.comparingInt(ChatMessage::getDepth));
+
+        log.info("🔥 GPT 결승전 라인업 (Top-down 정렬): {}", finalCandidates.stream()
+                .map(n -> compactNodeTitle(n) + "(D" + n.getDepth() + ")")
+                .collect(Collectors.joining(" -> ")));
+
+        ChatMessage llmChoice = resolveBestParentWithLLM(userMessage, finalCandidates);
+
+        return llmChoice != null ? llmChoice : finalCandidates.get(0);
+    }
+
+
+    // [헬퍼 메서드 추가] User 노드를 건너뛰고 진짜 AI 부모를 찾아주는 메서드
+    private ChatMessage getRealParent(ChatMessage node) {
+        if (node == null || node.getParent() == null) return null;
+        ChatMessage parent = node.getParent();
+        return parent.getSender() == SenderRole.USER ? parent.getParent() : parent;
     }
 
     private List<ChatMessage> collectAnchorParentCandidates(SubtopicAnchor anchor, List<ChatMessage> history) {
@@ -842,12 +841,18 @@ public class ChatService {
         return new ArrayList<>(deduplicated.values());
     }
 
+    // [수정] 기존 메서드를 아래 내용으로 교체하세요
+    // [수정] 기존 메서드 교체
     private double computeParentRelevanceScore(ChatMessage candidateAi, List<ChatMessage> history, String userMessage) {
         if (candidateAi == null) {
             return Double.NEGATIVE_INFINITY;
         }
 
         List<String> samples = new ArrayList<>();
+
+        // 1. 전략 A: 전체 경로 문맥
+        String pathContext = getPathContext(candidateAi);
+        addIfNotBlank(samples, pathContext);
         addIfNotBlank(samples, stripSystemPrefix(candidateAi.getContent()));
 
         ChatMessage userParent = candidateAi.getParent();
@@ -858,6 +863,7 @@ public class ChatService {
             addIfNotBlank(samples, userParent.getTopicHints());
         }
 
+        // 2. 최근 자식 대화 문맥 추가
         if (history != null && !history.isEmpty() && candidateAi.getId() != null) {
             int childSamples = 0;
             for (ChatMessage message : history) {
@@ -870,15 +876,31 @@ public class ChatService {
                 addIfNotBlank(samples, message.getNodeTitle());
                 addIfNotBlank(samples, stripSystemPrefix(message.getContent()));
                 childSamples++;
-                if (childSamples >= 4) {
-                    break;
-                }
+                if (childSamples >= 3) break;
             }
         }
 
+        // 3. 순수 임베딩 점수 계산
         double relationshipScore = contextSimilarityService.relationshipScore(userMessage, samples);
         double carryoverScore = topicCarryoverScore(userMessage, samples);
-        return (relationshipScore * 0.74) + (carryoverScore * 0.26);
+        double baseScore = (relationshipScore * 0.80) + (carryoverScore * 0.20);
+
+        // 🌟 [핵심 로직] 4. 위상(Topology) 기반 거리 페널티 적용
+        int currentMaxDepth = history.stream()
+                .filter(m -> m.getSender() == SenderRole.USER)
+                .mapToInt(ChatMessage::getDepth)
+                .max().orElse(0);
+
+        int depthDifference = currentMaxDepth - candidateAi.getDepth();
+        double depthPenalty = 0.0;
+
+        if (depthDifference >= 2) {
+            depthPenalty = depthDifference * -0.05; // 2칸 이상 차이나면 강력한 마이너스 점수!
+        } else if (candidateAi.getDepth() > 0) {
+            depthPenalty = candidateAi.getDepth() * 0.01; // 깊은 노드는 약간의 가산점
+        }
+
+        return baseScore + depthPenalty;
     }
 
     private boolean hasExplicitSiblingIntent(String userMessage) {
@@ -919,29 +941,28 @@ public class ChatService {
     }
 
     private ChatMessage resolveSiblingParent(ChatMessage requestedParent, ChatMessage anchorAiNode) {
-        if (requestedParent == null) {
-            return anchorAiNode;
-        }
+        if (requestedParent == null) return anchorAiNode;
 
-        ChatMessage currentAiNode = requestedParent;
-        if (currentAiNode.getSender() == SenderRole.USER) {
-            currentAiNode = currentAiNode.getParent();
-        }
-        if (currentAiNode == null) {
-            return anchorAiNode;
-        }
+        // 1. 현재 노드가 AI면 User로, User면 자기 자신
+        ChatMessage currentUserNode = requestedParent.getSender() == SenderRole.AI
+                ? requestedParent.getParent()
+                : requestedParent;
 
-        ChatMessage currentUserNode = currentAiNode.getParent();
-        if (currentUserNode == null) {
-            return anchorAiNode;
-        }
+        if (currentUserNode == null || currentUserNode.getParent() == null) return anchorAiNode;
 
+        // 2. User 노드의 부모(AI)가 바로 '진짜 부모'입니다.
         ChatMessage siblingParent = currentUserNode.getParent();
+
+        // 3. 그 진짜 부모가 현재 앵커(자료구조) 소속이라면 그 부모를 반환! (루트로 올리지 않음)
         if (siblingParent != null
                 && siblingParent.getSender() == SenderRole.AI
                 && isDescendantOf(siblingParent, anchorAiNode)) {
+
+            log.info("정상 형제 처리: 부모 노드 {} 를 반환합니다.", siblingParent.getId());
             return siblingParent;
         }
+
+        // 정 못 찾으면 앵커로 폴백
         return anchorAiNode;
     }
 
@@ -1273,47 +1294,64 @@ public class ChatService {
     private boolean looksLikeFollowUpQuestion(String userMessage) {
         return userMessage != null && FOLLOW_UP_PATTERN.matcher(userMessage).find();
     }
-    private SubtopicAnchor selectAnchorByAi(List<SubtopicAnchor> anchors, List<ChatMessage> history, String userMessage) {
-        if (anchors.isEmpty()) {
-            return null;
-        }
-        if (anchors.size() == 1) {
-            return anchors.get(0);
-        }
-
+    // 🌟 [범용 AI 기둥 선택기] 하드코딩 꼼수 X, 순수 논리적 추론 O
+    private SubtopicAnchor selectAnchorByAi(List<SubtopicAnchor> anchors, List<ChatMessage> history, String userMessage, SubtopicAnchor currentAnchor) {
+        if (anchors.isEmpty()) return null;
         try {
             StringBuilder options = new StringBuilder();
             for (int i = 0; i < anchors.size(); i++) {
-                SubtopicAnchor anchor = anchors.get(i);
-                options.append(i + 1)
-                        .append(") ")
-                        .append(anchor.topic())
-                        .append(" | hints: ")
-                        .append(defaultString(anchor.hints()))
-                        .append(" | samples: ")
-                        .append(String.join(" / ", buildAnchorProfileSamples(anchor, history).stream().limit(4).toList()))
-                        .append('\n');
+                options.append(i + 1).append(") ").append(anchors.get(i).topic()).append("\n");
             }
 
-            String prompt = "User question:\n" + userMessage
-                    + "\n\nCandidate subtopics:\n" + options
-                    + "\nReturn exactly one candidate text or NONE.";
-            String selected = cleanModelOutput(conversationTreeAiService.selectBestSubtopic(prompt));
-            if (selected.isBlank() || "NONE".equalsIgnoreCase(selected)) {
-                return null;
-            }
+            String currentContext = (currentAnchor != null) ? currentAnchor.topic() : "없음 (새로운 대화)";
 
-            String normalizedSelected = normalizeForMatch(selected);
-            for (SubtopicAnchor anchor : anchors) {
-                String normalizedTopic = normalizeForMatch(anchor.topic());
-                if (normalizedTopic.equals(normalizedSelected)
-                        || normalizedTopic.contains(normalizedSelected)
-                        || normalizedSelected.contains(normalizedTopic)) {
-                    return anchor;
+            String prompt = String.format("""
+                [Role]
+                당신은 컴퓨터 공학 전공 지식을 분류하는 전문가입니다. 
+                사용자의 질문을 분석하여, 아래 [카테고리 후보] 중 가장 알맞은 대주제(기둥)를 선택하세요.
+                
+                [Context]
+                현재 활성화된 대주제: %s
+                
+                [User Question]
+                "%s"
+                
+                [카테고리 후보]
+                %s
+                
+                [Reasoning Steps (필수)]
+                1. 주어 파악: 질문의 핵심 CS 개념을 파악하세요. 만약 질문이 짧거나 주어가 생략되었다면(예: "발생조건은?", "분류해봐"), 무조건 [Context]의 대주제와 관련된 질문으로 간주하세요.
+                2. 학문 매칭: 해당 개념이 컴퓨터 공학의 어느 전공 과목(OS, DB, 자료구조 등)에서 주로 다루는지 추론하세요.
+                3. 최종 선택: 추론한 전공과 가장 일치하는 번호를 후보에서 고르세요.
+                
+                [Output Format]
+                반드시 아래 JSON 형식으로만 응답하세요. 마크다운(```json) 포함 금지.
+                {
+                  "reasoning": "1~2단계 추론 과정을 1줄로 요약",
+                  "selectedIndex": 정답숫자
+                }
+                """, currentContext, userMessage, options.toString());
+
+            String rawAnswer = conversationTreeAiService.selectBestSubtopic(prompt);
+
+            int start = rawAnswer.indexOf("{");
+            int end = rawAnswer.lastIndexOf("}");
+            if (start != -1 && end != -1) {
+                String jsonStr = rawAnswer.substring(start, end + 1);
+                ObjectMapper mapper = new ObjectMapper();
+                Map<String, Object> result = mapper.readValue(jsonStr, new TypeReference<Map<String, Object>>(){});
+
+                int chosenIdx = Integer.parseInt(result.get("selectedIndex").toString()) - 1;
+                String reasoning = result.get("reasoning").toString();
+
+                log.info("🎯 GPT 예선전(기둥) 판결: {}번 후보 선택 (이유: {})", chosenIdx + 1, reasoning);
+
+                if (chosenIdx >= 0 && chosenIdx < anchors.size()) {
+                    return anchors.get(chosenIdx);
                 }
             }
         } catch (Exception e) {
-            log.debug("AI subtopic selection failed: {}", e.getMessage());
+            log.warn("AI anchor selection failed (Fallback to Vector): {}", e.getMessage());
         }
         return null;
     }
@@ -1400,6 +1438,7 @@ public class ChatService {
         return siblings;
     }
 
+    // 🌟 1. UI와 DB에 저장되는 이름표는 다시 원래의 "예쁜 요약본"으로 되돌립니다.
     private String extractNodeHintTopic(ChatMessage message) {
         if (message == null) {
             return "";
@@ -1853,4 +1892,160 @@ public class ChatService {
             return cues;
         }
     }
+
+    // [새로 추가] 특정 노드부터 상위로 올라가며 경로(Path)를 텍스트로 합치는 메서드
+    private String getPathContext(ChatMessage node) {
+        if (node == null) return "";
+        List<String> pathTitles = new ArrayList<>();
+        ChatMessage current = node;
+
+        int maxDepth = 4; // 너무 깊은 탐색 방지
+        while (current != null && maxDepth-- > 0) {
+            String title = extractNodeHintTopic(current);
+            if (!title.isBlank()) {
+                pathTitles.add(title);
+            }
+            current = current.getParent();
+        }
+
+        Collections.reverse(pathTitles); // 루트 -> 하위 순서로 정렬
+        return String.join(" -> ", pathTitles);
+    }
+
+    private ChatMessage resolveBestParentWithLLM(String userMessage, List<ChatMessage> candidates) {
+        if (candidates == null || candidates.isEmpty()) return null;
+        if (candidates.size() == 1) return candidates.get(0);
+
+        try {
+            // 🚨 [수정 1] AI 힌트에 GPT가 낚이는 것을 방지하기 위해 괄호 안의 힌트를 제거하고 순수 질문만 추출합니다!
+            String pureTargetQuestion = userMessage.replaceAll("\\(AI 답변 힌트:.*\\)", "").trim();
+
+            StringBuilder options = new StringBuilder("[\n");
+            int maxDepth = -1;
+            String deepestTopic = "";
+
+            for (int i = 0; i < candidates.size(); i++) {
+                ChatMessage c = candidates.get(i);
+
+                // UI용 타이틀 (AI의 긴 답변일 수도 있고, 짧은 요약일 수도 있음)
+                String cleanTitle = compactNodeTitle(c);
+                cleanTitle = cleanTitle.replaceAll("\\[AUTO_SUBTOPIC(?:_ACK)?\\]", "").trim();
+                cleanTitle = cleanTitle.replaceAll("[\n\r\"'\\\\]", " ");
+
+                // 🚨 핵심: AI 노드의 부모(사용자)가 입력했던 "진짜 질문 원문"을 무조건 추출
+                String userRealQuestion = "알 수 없음";
+                ChatMessage userNode = c.getParent();
+                if (userNode != null && userNode.getSender() == SenderRole.USER) {
+                    userRealQuestion = stripSystemPrefix(defaultString(userNode.getContent()));
+                    userRealQuestion = userRealQuestion.replaceAll("[\n\r\"'\\\\]", " ").trim();
+                }
+
+                if (c.getDepth() > maxDepth) {
+                    maxDepth = c.getDepth();
+                    // 문맥 파악용은 실제 유저 질문을 사용!
+                    deepestTopic = userRealQuestion.equals("알 수 없음") ? cleanTitle : userRealQuestion;
+                }
+
+                // 🌟 JSON에 "user_question" 필드를 추가하여 GPT가 절대 오해하지 않도록 만듦!
+                options.append(String.format("  {\"id\": %d, \"depth\": %d, \"topic\": \"%s\", \"user_question\": \"%s\"}",
+                        c.getId(), c.getDepth(), trimToLength(cleanTitle, 30), trimToLength(userRealQuestion, 50)));
+                if (i < candidates.size() - 1) options.append(",\n");
+            }
+            options.append("\n]");
+
+            String prompt = String.format("""
+            <System_Persona>
+            당신은 전 세계 컴퓨터 공학 지식을 분류하는 '수석 지식 그래프 아키텍트'입니다.
+            사용자의 질문(Target)을 후보군(Candidates Dataset) 중 가장 논리적인 '직계 부모(Immediate Parent)'에 연결하십시오.
+            </System_Persona>
+            
+            <Ontology_Rules>
+            1. [Taxonomic Membership]
+               - Target 질문이 Candidate의 **'user_question'** 내용의 '구체적 종류/사례', '세부 속성', '다음 단계'를 묻는다면 90~100점 부여.
+               - 🚨 주의: 'topic'보다 **'user_question'**을 기준으로 부모 자격을 판단하십시오!
+
+            2. [Sibling & Sequence Exclusion (절대 규칙 🚨)]
+               - Target 질문과 Candidate가 서로 대등한 병렬 관계이거나, 동일한 부모를 공유하는 연속된 단계(예: 제1정규형과 제2정규형)라면 무조건 0~20점을 부여하여 부모 후보에서 탈락시키십시오.
+
+            3. [Contextual Inference for Short Queries]
+               - Target에 주어가 없다면, 현재 대화의 가장 깊은 질문인 '%s'에 대한 후속 질문으로 간주하십시오.
+
+            4. [Depth Priority (절대 규칙 🚨)]
+               - 만약 Target이 여러 Candidate에 논리적으로 속할 수 있다면(예: Depth 1과 Depth 2), 무조건 '가장 구체적인 질문을 했던 가장 깊은 Depth' 후보에게 100점을 몰아주고, 얕은 Depth(포괄적 개념)는 50점 이하로 대폭 감점하십시오.
+            </Ontology_Rules>
+            
+            <Input_Context>
+            - Target Concept(User Question): "%s"
+            - Candidates Dataset:
+            %s
+            </Input_Context>
+            
+            <Output_Constraint>
+            JSON으로만 응답하십시오. (No Markdown)
+            {
+              "target_analysis": "Target 질문의 핵심 의도 및 부모 선택 논리 요약",
+              "evaluations": [
+                { "id": ID, "logic_rel": "Hyponym | Hypernym | Sibling | Irrelevant", "score": 점수, "reason": "룰 적용 근거 ('user_question' 기준)" }
+              ]
+            }
+            </Output_Constraint>
+            """, deepestTopic, pureTargetQuestion, options.toString()); // 👈 수정: pureTargetQuestion 적용
+
+            String rawAnswer = conversationTreeAiService.selectBestSubtopic(prompt);
+            int start = rawAnswer.indexOf("{");
+            int end = rawAnswer.lastIndexOf("}");
+            if (start == -1 || end == -1) return candidates.get(0);
+
+            JsonNode rootNode = new ObjectMapper().readTree(rawAnswer.substring(start, end + 1));
+            log.info("🧠 [Taxonomy Insight] {}", rootNode.path("target_analysis").asText());
+
+            JsonNode evaluations = rootNode.path("evaluations");
+            Long bestId = null;
+            int highestScore = -1;
+            int deepestDepth = -1;
+
+            // 🌟 3. 점수 밸런스 패치 적용
+            for (JsonNode eval : evaluations) {
+                Long id = eval.path("id").asLong();
+                int score = eval.path("score").asInt();
+
+                int currentDepth = -1;
+                for (ChatMessage c : candidates) {
+                    if (c.getId().equals(id)) {
+                        currentDepth = c.getDepth();
+                        break;
+                    }
+                }
+
+                // 🚨 [수정 2] 0점짜리가 뎁스빨로 우승하는 것을 원천 차단!
+                // GPT가 70점 이상(논리적 부모로 인정)을 준 경우에만, 타이브레이커 느낌으로 깊이에 따른 소폭의 가산점(+5점)을 줍니다.
+                int adjustedScore = score;
+                if (score >= 70) {
+                    adjustedScore = score + (currentDepth * 5);
+                }
+
+                log.info(" 🔍 Node [{}] | Logic: {} | Original Score: {} | Adjusted Score: {} | Depth: {} | Reason: {}",
+                        id, eval.path("logic_rel").asText(), score, adjustedScore, currentDepth, eval.path("reason").asText());
+
+                // 이제 '조정된 점수(adjustedScore)'로 챔피언을 가립니다!
+                if (adjustedScore > highestScore) {
+                    highestScore = adjustedScore;
+                    bestId = id;
+                    deepestDepth = currentDepth;
+                }
+            }
+
+            if (bestId != null) {
+                Long finalBestId = bestId;
+                return candidates.stream().filter(c -> c.getId().equals(finalBestId)).findFirst().orElse(candidates.get(0));
+            }
+        } catch (Exception e) {
+            log.error("Engineering Pipeline Error: {}", e.getMessage());
+        }
+        return candidates.get(0);
+    }
+
+
+
+
 }

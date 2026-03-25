@@ -67,11 +67,12 @@ export function updateRoomTitleApi(roomId, title, token = "") {
 }
 
 export function getRoomHistoryApi(roomId, token = "") {
-  return request(`/api/chat/room/${roomId}/history`, { method: "GET" }, token);
+  // 주소 뒤에 현재 시간(밀리초)을 붙여 매번 다른 URL처럼 보이게 만듭니다.
+  return request(`/api/chat/room/${roomId}/history?t=${Date.now()}`, { method: "GET" }, token);
 }
 
 export function getRoomTreeApi(roomId, token = "") {
-  return request(`/api/chat/room/${roomId}/tree`, { method: "GET" }, token);
+  return request(`/api/chat/room/${roomId}/tree?t=${Date.now()}`, { method: "GET" }, token);
 }
 
 export function askChatApi({ roomId,parentId, message, token = "" }) {

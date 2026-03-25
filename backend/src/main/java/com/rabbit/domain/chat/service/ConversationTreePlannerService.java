@@ -53,6 +53,7 @@ public class ConversationTreePlannerService {
     public List<String> extractSeedSubtopics(String userMessage) {
         if (!isNotBlank(userMessage)) {
             return List.of();
+
         }
 
         Matcher matcher = SUB_PATTERN.matcher(userMessage);

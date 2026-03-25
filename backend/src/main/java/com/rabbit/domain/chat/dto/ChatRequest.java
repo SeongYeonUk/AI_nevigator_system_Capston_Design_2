@@ -11,5 +11,6 @@ public class ChatRequest {
     private Long roomId;
     private Long parentId;
     private String message;
+    private Long activeNodeId;
 }
 

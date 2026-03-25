@@ -1,4 +1,4 @@
-import { loginApi, signupApi } from "./api/auth-api.js";
+﻿import { loginApi, signupApi } from "./api/auth-api.js";
 import {
   askChatApi,
   createRoomApi,
@@ -638,6 +638,7 @@ function applyAssistantResponseToTempNode({
   return persistedId;
 }
 
+// 🌟 교체할 syncRoomHistoryInBackground 함수
 async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, options = {}) {
   const expectSeedNodes = Boolean(options.expectSeedNodes);
   const preferredId = preferredNodeId == null ? null : String(preferredNodeId);
@@ -646,15 +647,20 @@ async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, optio
     : null;
   const initialPreferredSignature = buildNodePlacementSignature(initialPreferredNode);
   const startedAt = Date.now();
-  const maxDurationMs = expectSeedNodes ? 30000 : 20000;
+  const maxDurationMs = expectSeedNodes ? 30000 : 15000; // 최대 15초 동안 끈질기게 추적!
   let attempt = 0;
+
   state.pendingTreeBuildJobs += 1;
   state.treeBuildStatus = "processing";
   renderTreeBuildStatus();
 
+  // 🚨 [추가된 부분 1] 추적 시작을 알리는 콘솔 로그!
+  console.log(`🔄 [백그라운드] 트리 위치 추적 시작... (대상 노드: ${preferredId})`);
+
   try {
     while (Date.now() - startedAt <= maxDurationMs) {
-      const delayMs = attempt === 0 ? 0 : Math.min(700 + (attempt - 1) * 350, 2000);
+      // 서버 무리를 줄이기 위해 확인 주기를 점점 늘림 (1초 -> 1.5초 -> 2초)
+      const delayMs = attempt === 0 ? 0 : Math.min(1000 + (attempt - 1) * 500, 3000);
       if (delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
@@ -664,25 +670,32 @@ async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, optio
         if (!applied) {
           return;
         }
+
         if (preferredId && state.nodes.some((node) => node.id === preferredId)) {
           state.selectedNodeId = preferredId;
         }
-        render();
+        
+        // 🌟 화면 즉시 업데이트! (이게 있어야 F5 없이 트리가 이동합니다)
+        render(); 
 
         if (preferredId) {
           const latestPreferredNode = state.nodes.find((node) => node.id === preferredId) || null;
           const latestPreferredSignature = buildNodePlacementSignature(latestPreferredNode);
+          
           const hasPlacementChanged =
             initialPreferredSignature &&
             latestPreferredSignature &&
             latestPreferredSignature !== initialPreferredSignature;
+            
           if (hasPlacementChanged) {
-            return;
+            // 🚨 [추가된 부분 2] 자리를 찾았을 때 뜨는 짜릿한 성공 로그!
+            console.log(`✨ [백그라운드 성공] 노드가 올바른 위치로 스냅(Snap) 되었습니다!`);
+            return; // 쿨하게 추적 종료
           }
         }
 
         if (!expectSeedNodes) {
-          // 일반 질문도 트리 후처리 반영이 느릴 수 있어, 최대 시간까지 추적한다.
+          // 일반 질문: 자리가 바뀔 때까지 계속 루프를 돕니다.
         } else {
           const hasPreferredDepthOneChild = preferredId
             ? state.nodes.some((node) => node.parentId === preferredId && Number(node.depth) === 1)
@@ -706,6 +719,7 @@ async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, optio
     if (state.pendingTreeBuildJobs === 0) {
       state.treeBuildStatus = "completed";
       renderTreeBuildStatus();
+      console.log("✅ [백그라운드] 트리 동기화 폴링 종료.");
     }
   }
 }
