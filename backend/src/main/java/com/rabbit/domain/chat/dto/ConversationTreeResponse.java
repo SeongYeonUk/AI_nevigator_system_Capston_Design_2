@@ -12,5 +12,6 @@ public class ConversationTreeResponse {
     private String level1Topic;
     private List<String> level2Topics;
     private int totalNodes;
+    private boolean processing;
     private List<ConversationTreeNodeResponse> nodes;
 }

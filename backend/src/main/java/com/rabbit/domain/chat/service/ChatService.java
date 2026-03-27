@@ -27,6 +27,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -86,6 +88,7 @@ public class ChatService {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserRepository userRepository;
     private final TransactionTemplate transactionTemplate;
+    private final Map<Long, AtomicInteger> roomTreeProcessingCounters = new ConcurrentHashMap<>();
 
     @Transactional
     public Long createRoom(String authorization, String title) {
@@ -175,20 +178,16 @@ public class ChatService {
         // 🗑️ 기존에 있던 무거운 라우팅 로직(history 가져오고, GPT 부르고 등등)은 전부 삭제!
         // =====================================================================
 
-        // 🌟 6. [핵심] 무거운 트리 정렬 및 기획 작업은 백그라운드 스레드로 던집니다!
-        // 이미 만들어두신 완벽한 비동기 메서드를 여기서 호출합니다.
+        markTreeProcessingStarted(roomId);
         triggerTreePostProcessingAsync(roomId, parentId, userMessage, userSaved.getId(), aiSaved.getId());
 
-        log.info("⚡ [초고속 응답] AI 답변 즉시 반환 완료. 트리의 올바른 위치는 백그라운드에서 계산됩니다.");
-
-        // 7. 프론트엔드에 즉시 응답 반환 (일단 화면에 띄우기 위해 임시 정보 기준 반환)
         return ChatResponse.builder()
                 .answer(aiAnswer)
                 .newNodeId(aiSaved.getId())
-                .resolvedParentId(requestedParent != null ? requestedParent.getId() : null)
+                .resolvedParentId(parentId)
                 .nodeTitle(fallbackNodeTitle)
-                .level1Topic("") // 나중에 백그라운드에서 채워짐
-                .level2Topic("") // 나중에 백그라운드에서 채워짐
+                .level1Topic("")
+                .level2Topic("")
                 .depth(initialDepth)
                 .build();
     }
@@ -206,6 +205,8 @@ public class ChatService {
                         applyTreePostProcessing(roomId, requestedParentId, userMessage, userMessageId, aiMessageId);
                     } catch (Exception e) {
                         log.warn("Tree post-processing failed for room {}: {}", roomId, e.getMessage());
+                    } finally {
+                        markTreeProcessingFinished(roomId);
                     }
                 })
         );
@@ -221,6 +222,27 @@ public class ChatService {
         }
 
         postProcessTask.run();
+    }
+
+    private void markTreeProcessingStarted(Long roomId) {
+        roomTreeProcessingCounters
+                .computeIfAbsent(roomId, key -> new AtomicInteger(0))
+                .incrementAndGet();
+    }
+
+    private void markTreeProcessingFinished(Long roomId) {
+        roomTreeProcessingCounters.compute(roomId, (key, counter) -> {
+            if (counter == null) {
+                return null;
+            }
+            int next = counter.decrementAndGet();
+            return next > 0 ? counter : null;
+        });
+    }
+
+    private boolean isTreeProcessing(Long roomId) {
+        AtomicInteger counter = roomTreeProcessingCounters.get(roomId);
+        return counter != null && counter.get() > 0;
     }
 
     private void applyTreePostProcessing(
@@ -1696,6 +1718,7 @@ public class ChatService {
                 .level1Topic(level1Topic)
                 .level2Topics(new ArrayList<>(level2Topics))
                 .totalNodes(nodes.size())
+                .processing(isTreeProcessing(roomId))
                 .nodes(nodes)
                 .build();
     }

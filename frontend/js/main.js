@@ -16,6 +16,8 @@ if (typeof window !== "undefined") {
   window.__PATHLEARN_MAIN_READY = false;
 }
 
+let transparentDragImage = null;
+
 const state = {
   currentSession: loadSession(),
   currentView: "landing",
@@ -23,13 +25,28 @@ const state = {
   graphZoom: 1,
   roomDeleteMode: false,
   selectedRoomIdsForDelete: new Set(),
+  suppressNodeClick: false,
   selectedNodeId: null,
   nodes: [],
+  treeNodes: [],
+  pendingTreeMutations: [],
   chatRooms: [],
   currentRoomId: null,
   isRoomDrawerOpen: false,
   treeBuildStatus: "completed",
-  pendingTreeBuildJobs: 0
+  pendingTreeBuildJobs: 0,
+  treeProcessingWatcherToken: 0,
+  dragState: {
+    sourceNodeId: null,
+    targetNodeId: null,
+    active: false,
+    previewElement: null,
+    previewFollowsPointer: false,
+    grabOffsetX: 0,
+    grabOffsetY: 0,
+    pointerX: 0,
+    pointerY: 0
+  }
 };
 
 const el = {
@@ -89,6 +106,8 @@ const el = {
 
   selectedNodeTitle: document.getElementById("selectedNodeTitle"),
   selectedNodeMeta: document.getElementById("selectedNodeMeta"),
+  deleteSelectedNodeBtn: document.getElementById("deleteSelectedNodeBtn"),
+  treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
   driftAlert: document.getElementById("driftAlert"),
 
@@ -156,6 +175,8 @@ function bindEvents() {
   el.roomDeleteModeBtn?.addEventListener("click", enterRoomDeleteMode);
   el.roomDeleteApplyBtn?.addEventListener("click", onApplyDeleteSelectedRooms);
   el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
+  el.deleteSelectedNodeBtn?.addEventListener("click", onDeleteSelectedNode);
+  document.addEventListener("dragover", onDocumentTreeDragOver);
 }
 
 function render() {
@@ -165,6 +186,216 @@ function render() {
   renderChat();
   renderInsights();
   syncChatInputAvailability();
+}
+
+function cloneNode(node) {
+  return { ...node };
+}
+
+function getTreeSourceNodes() {
+  return state.treeNodes.length ? state.treeNodes : state.nodes;
+}
+
+function clearTreeDragState() {
+  if (state.dragState.previewElement?.remove) {
+    state.dragState.previewElement.remove();
+  }
+  document.body.classList.remove("tree-dragging");
+  state.dragState = {
+    sourceNodeId: null,
+    targetNodeId: null,
+    active: false,
+    previewElement: null,
+    previewFollowsPointer: false,
+    grabOffsetX: 0,
+    grabOffsetY: 0,
+    pointerX: 0,
+    pointerY: 0
+  };
+}
+
+function isNodeInDraggedSubtree(nodeId) {
+  if (!state.dragState.active || !state.dragState.sourceNodeId) {
+    return false;
+  }
+  return collectSubtreeIds(state.dragState.sourceNodeId, getTreeSourceNodes()).has(String(nodeId));
+}
+
+function getTreeNodeSubtree(nodeId, nodes = getTreeSourceNodes()) {
+  const tree = buildTree(nodes);
+  return tree.find((node) => node.id === String(nodeId)) || null;
+}
+
+function getDraggedSubtreeNodes(nodeId, nodes = getTreeSourceNodes()) {
+  const subtreeIds = collectSubtreeIds(nodeId, nodes);
+  return nodes.filter((node) => subtreeIds.has(String(node.id)));
+}
+
+function renderTreeDragPreviewNode(node) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "tree-drag-preview-node";
+
+  const card = document.createElement("div");
+  card.className = "tree-drag-preview-card";
+
+  const time = new Date(node.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  card.innerHTML = `<span class="tree-drag-preview-title">${escapeHtml(node.title)}</span><span class="tree-drag-preview-meta">Depth ${node.depth} / ${time}</span>`;
+  wrapper.appendChild(card);
+
+  if (node.children.length > 0) {
+    const childrenWrap = document.createElement("div");
+    childrenWrap.className = "tree-drag-preview-children";
+    node.children.forEach((child) => childrenWrap.appendChild(renderTreeDragPreviewNode(child)));
+    wrapper.appendChild(childrenWrap);
+  }
+
+  return wrapper;
+}
+
+function createGraphTreeDragPreview(nodeId) {
+  const subtreeIds = collectSubtreeIds(nodeId, getTreeSourceNodes());
+  const sourceSvg = el.treeRoot?.querySelector(".tree-graph-svg");
+  if (!sourceSvg || !subtreeIds.size) {
+    return null;
+  }
+
+  const nodeGroups = [...sourceSvg.querySelectorAll(".tree-node-group[data-node-id]")]
+    .filter((group) => subtreeIds.has(group.dataset.nodeId));
+  if (!nodeGroups.length) {
+    return null;
+  }
+
+  const relevantLinks = [...sourceSvg.querySelectorAll(".tree-link[data-source-id][data-target-id]")]
+    .filter((link) => subtreeIds.has(link.dataset.sourceId) && subtreeIds.has(link.dataset.targetId));
+
+  const bounds = nodeGroups.reduce((acc, group) => {
+    const circle = group.querySelector("circle");
+    const label = group.querySelector("text");
+    const cx = Number(circle?.getAttribute("cx")) || 0;
+    const cy = Number(circle?.getAttribute("cy")) || 0;
+    const r = Number(circle?.getAttribute("r")) || 20;
+    const textWidth = Math.max(44, String(label?.textContent || "").length * 8);
+    acc.minX = Math.min(acc.minX, cx - Math.max(r, textWidth / 2));
+    acc.maxX = Math.max(acc.maxX, cx + Math.max(r, textWidth / 2));
+    acc.minY = Math.min(acc.minY, cy - r - 6);
+    acc.maxY = Math.max(acc.maxY, cy + r + 12);
+    return acc;
+  }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+
+  const sourceGroup = nodeGroups.find((group) => group.dataset.nodeId === String(nodeId)) || nodeGroups[0];
+  const sourceCircle = sourceGroup?.querySelector("circle");
+
+  const padding = 14;
+  const minX = bounds.minX - padding;
+  const minY = bounds.minY - padding;
+  const normalizedWidth = Math.max(80, (bounds.maxX - bounds.minX) + padding * 2);
+  const normalizedHeight = Math.max(80, (bounds.maxY - bounds.minY) + padding * 2);
+  const preview = document.createElement("div");
+  preview.className = "tree-drag-preview graph-preview";
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "tree-drag-preview-graph");
+  svg.setAttribute("viewBox", `0 0 ${normalizedWidth} ${normalizedHeight}`);
+  svg.setAttribute("width", String(normalizedWidth));
+  svg.setAttribute("height", String(normalizedHeight));
+
+  relevantLinks.forEach((link) => {
+    const clone = link.cloneNode(true);
+    clone.setAttribute("x1", String((Number(link.getAttribute("x1")) || 0) - minX));
+    clone.setAttribute("y1", String((Number(link.getAttribute("y1")) || 0) - minY));
+    clone.setAttribute("x2", String((Number(link.getAttribute("x2")) || 0) - minX));
+    clone.setAttribute("y2", String((Number(link.getAttribute("y2")) || 0) - minY));
+    clone.setAttribute("class", "tree-drag-preview-link");
+    svg.appendChild(clone);
+  });
+
+  nodeGroups.forEach((group) => {
+    const clone = group.cloneNode(true);
+    clone.setAttribute("class", "tree-node-group");
+    clone.querySelectorAll("circle").forEach((circle) => {
+      circle.setAttribute("cx", String((Number(circle.getAttribute("cx")) || 0) - minX));
+      circle.setAttribute("cy", String((Number(circle.getAttribute("cy")) || 0) - minY));
+      circle.setAttribute("class", "tree-drag-preview-node-circle");
+    });
+    clone.querySelectorAll("text").forEach((label) => {
+      label.setAttribute("x", String((Number(label.getAttribute("x")) || 0) - minX));
+      label.setAttribute("y", String((Number(label.getAttribute("y")) || 0) - minY));
+      label.setAttribute("class", "tree-drag-preview-node-label");
+      label.style.pointerEvents = "none";
+    });
+    svg.appendChild(clone);
+  });
+
+  preview.appendChild(svg);
+  document.body.appendChild(preview);
+  if (sourceCircle) {
+    preview.dataset.anchorX = String((Number(sourceCircle.getAttribute("cx")) || 0) - minX);
+    preview.dataset.anchorY = String((Number(sourceCircle.getAttribute("cy")) || 0) - minY);
+  }
+  return preview;
+}
+
+function createTreeDragPreview(nodeId) {
+  if (state.treeViewMode === "graph") {
+    return createGraphTreeDragPreview(nodeId);
+  }
+
+  const preview = document.createElement("div");
+  preview.className = "tree-drag-preview list-preview";
+  const subtree = getTreeNodeSubtree(nodeId);
+  if (!subtree) {
+    return null;
+  }
+  preview.appendChild(renderTreeDragPreviewNode(subtree));
+  document.body.appendChild(preview);
+  return preview;
+}
+
+function updateTreeDragPreviewPosition(clientX = state.dragState.pointerX, clientY = state.dragState.pointerY) {
+  const { previewElement } = state.dragState;
+  if (!previewElement || !state.dragState.previewFollowsPointer || (!clientX && !clientY)) {
+    return;
+  }
+  previewElement.style.transform = `translate(${clientX - state.dragState.grabOffsetX}px, ${clientY - state.dragState.grabOffsetY}px)`;
+}
+
+function updateTreeDragPointer(clientX, clientY) {
+  if (!state.dragState.active) {
+    return;
+  }
+  if (Number.isFinite(clientX)) {
+    state.dragState.pointerX = clientX;
+  }
+  if (Number.isFinite(clientY)) {
+    state.dragState.pointerY = clientY;
+  }
+  updateTreeDragPreviewPosition();
+}
+
+function ensureTreeDragPreview(nodeId) {
+  if (!state.dragState.active || !nodeId || state.dragState.previewElement) {
+    return state.dragState.previewElement;
+  }
+  const preview = createTreeDragPreview(nodeId);
+  state.dragState.previewElement = preview;
+  updateTreeDragPreviewPosition();
+  return preview;
+}
+
+function getTransparentDragImage() {
+  if (transparentDragImage) {
+    return transparentDragImage;
+  }
+  const pixel = document.createElement("canvas");
+  pixel.width = 1;
+  pixel.height = 1;
+  transparentDragImage = pixel;
+  return transparentDragImage;
+}
+
+function clearPendingTreeMutations() {
+  state.pendingTreeMutations = [];
+  clearTreeDragState();
 }
 
 function switchView(view, authTab) {
@@ -302,11 +533,15 @@ async function bootstrapChatRooms() {
     if (state.chatRooms.length === 0) {
       state.currentRoomId = null;
       state.nodes = [];
+      state.treeNodes = [];
       state.selectedNodeId = null;
+      state.treeBuildStatus = "completed";
+      state.treeProcessingWatcherToken++;
       return;
     }
 
     if (!state.currentRoomId || !state.chatRooms.some((room) => room.id === state.currentRoomId)) {
+      clearPendingTreeMutations();
       state.currentRoomId = state.chatRooms[0].id;
     }
 
@@ -314,7 +549,11 @@ async function bootstrapChatRooms() {
   } catch (error) {
     state.currentRoomId = null;
     state.nodes = [];
+    state.treeNodes = [];
+    clearPendingTreeMutations();
     state.selectedNodeId = null;
+    state.treeBuildStatus = "completed";
+    state.treeProcessingWatcherToken++;
     setAuthMessage(toUiError(error), "error");
   }
 }
@@ -374,6 +613,8 @@ function renderRoomDrawer() {
       if (state.roomDeleteMode) {
         return;
       }
+      clearPendingTreeMutations();
+      state.treeProcessingWatcherToken++;
       state.currentRoomId = room.id;
       await loadRoomHistory(room.id);
       toggleRoomDrawer(false);
@@ -414,12 +655,17 @@ async function onApplyDeleteSelectedRooms() {
   state.chatRooms = state.chatRooms.filter((room) => !state.selectedRoomIdsForDelete.has(String(room.id)));
 
   if (state.currentRoomId && state.selectedRoomIdsForDelete.has(String(state.currentRoomId))) {
+    clearPendingTreeMutations();
     state.currentRoomId = state.chatRooms.length ? state.chatRooms[0].id : null;
     if (state.currentRoomId) {
       await loadRoomHistory(state.currentRoomId);
     } else {
       state.nodes = [];
+      state.treeNodes = [];
+      clearPendingTreeMutations();
       state.selectedNodeId = null;
+      state.treeBuildStatus = "completed";
+      state.treeProcessingWatcherToken++;
     }
   }
 
@@ -432,6 +678,8 @@ async function onCreateRoom(event) {
   event.preventDefault();
   try {
     const roomId = await createRoomWithFallbackTitle();
+    clearPendingTreeMutations();
+    state.treeProcessingWatcherToken++;
     state.currentRoomId = roomId;
     await bootstrapChatRooms();
     if (el.roomTitleInput) {
@@ -451,15 +699,29 @@ async function createRoomWithFallbackTitle() {
 }
 
 async function loadRoomHistory(roomId) {
+  return loadRoomHistoryWithOptions(roomId, {});
+}
+
+async function loadRoomHistoryWithOptions(roomId, options = {}) {
   const token = state.currentSession?.accessToken || "";
+  const keepTreeWhileProcessing = options.keepTreeWhileProcessing === true;
+  const suppressWatcher = options.suppressWatcher === true;
 
   try {
     const tree = await getRoomTreeApi(roomId, token);
     if (state.currentRoomId !== roomId) {
       return false;
     }
+    state.treeBuildStatus = tree?.processing ? "processing" : "completed";
     if (tree && Array.isArray(tree.nodes)) {
-      state.nodes = treeToNodes(tree.nodes);
+      const nextNodes = applyPendingTreeMutationsTo(treeToNodes(tree.nodes));
+      state.nodes = nextNodes;
+      if (!keepTreeWhileProcessing || !tree.processing) {
+        state.treeNodes = nextNodes;
+      }
+      if (tree.processing && !suppressWatcher) {
+        startTreeProcessingWatcher(roomId);
+      }
       state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
       return true;
     }
@@ -471,9 +733,81 @@ async function loadRoomHistory(roomId) {
   if (state.currentRoomId !== roomId) {
     return false;
   }
-  state.nodes = historyToNodes(history, roomId);
+  state.treeBuildStatus = "completed";
+  state.nodes = applyPendingTreeMutationsTo(historyToNodes(history, roomId));
+  state.treeNodes = state.nodes;
   state.selectedNodeId = state.nodes.length ? state.nodes[state.nodes.length - 1].id : null;
   return true;
+}
+
+async function waitForTreeProcessingToFinish(roomId, targetNodeId) {
+  const timeoutMs = 30000;
+  const intervalMs = 700;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const applied = await loadRoomHistoryWithOptions(roomId, { keepTreeWhileProcessing: true });
+    if (!applied || state.currentRoomId !== roomId) {
+      return false;
+    }
+    if (state.treeBuildStatus !== "processing") {
+      state.treeNodes = state.nodes;
+      if (targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
+        state.selectedNodeId = targetNodeId;
+      }
+      render();
+      return true;
+    }
+  }
+
+  const applied = await loadRoomHistoryWithOptions(roomId, { keepTreeWhileProcessing: false });
+  if (applied && targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
+    state.selectedNodeId = targetNodeId;
+  }
+  render();
+  return applied;
+}
+
+function startTreeProcessingWatcher(roomId, targetNodeId = null) {
+  if (!roomId || state.currentRoomId !== roomId) {
+    return;
+  }
+
+  const watcherToken = ++state.treeProcessingWatcherToken;
+  const startedAt = Date.now();
+  const timeoutMs = 45000;
+  const intervalMs = 900;
+
+  const tick = async () => {
+    if (state.currentRoomId !== roomId || state.treeProcessingWatcherToken !== watcherToken) {
+      return;
+    }
+
+    const applied = await loadRoomHistoryWithOptions(roomId, {
+      keepTreeWhileProcessing: true,
+      suppressWatcher: true
+    });
+
+    if (!applied || state.currentRoomId !== roomId || state.treeProcessingWatcherToken !== watcherToken) {
+      return;
+    }
+
+    if (state.treeBuildStatus === "processing" && Date.now() - startedAt < timeoutMs) {
+      render();
+      setTimeout(tick, intervalMs);
+      return;
+    }
+
+    state.treeNodes = state.nodes;
+    if (targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
+      state.selectedNodeId = targetNodeId;
+    }
+    state.treeBuildStatus = "completed";
+    render();
+  };
+
+  void tick();
 }
 
 function treeToNodes(treeNodes) {
@@ -490,6 +824,38 @@ function treeToNodes(treeNodes) {
     depth: Number(entry.depth) || 0,
     timestamp: Date.parse(entry.createdAt) || Date.now()
   }));
+}
+
+function applyPendingTreeMutationsTo(nodes) {
+  let nextNodes = nodes.map(cloneNode);
+
+  for (const mutation of state.pendingTreeMutations) {
+    if (!mutation || !mutation.type) {
+      continue;
+    }
+
+    if (mutation.type === "delete_subtree") {
+      const ids = collectSubtreeIds(mutation.nodeId, nextNodes);
+      nextNodes = nextNodes.filter((node) => !ids.has(node.id));
+      continue;
+    }
+
+    if (mutation.type === "move_subtree") {
+      const sourceNode = nextNodes.find((node) => node.id === mutation.nodeId);
+      const targetNode = nextNodes.find((node) => node.id === mutation.newParentId);
+      if (!sourceNode || !targetNode) {
+        continue;
+      }
+      if (!canMoveNodeUnderTarget(mutation.nodeId, mutation.newParentId, nextNodes)) {
+        continue;
+      }
+      sourceNode.parentId = mutation.newParentId;
+      sourceNode.depth = (Number(targetNode.depth) || 0) + 1;
+      normalizeSubtreeDepths(nextNodes, sourceNode.id);
+    }
+  }
+
+  return nextNodes;
 }
 
 function historyToNodes(history, roomId) {
@@ -638,92 +1004,6 @@ function applyAssistantResponseToTempNode({
   return persistedId;
 }
 
-// 🌟 교체할 syncRoomHistoryInBackground 함수
-async function syncRoomHistoryInBackground(roomId, preferredNodeId = null, options = {}) {
-  const expectSeedNodes = Boolean(options.expectSeedNodes);
-  const preferredId = preferredNodeId == null ? null : String(preferredNodeId);
-  const initialPreferredNode = preferredId
-    ? state.nodes.find((node) => node.id === preferredId)
-    : null;
-  const initialPreferredSignature = buildNodePlacementSignature(initialPreferredNode);
-  const startedAt = Date.now();
-  const maxDurationMs = expectSeedNodes ? 30000 : 15000; // 최대 15초 동안 끈질기게 추적!
-  let attempt = 0;
-
-  state.pendingTreeBuildJobs += 1;
-  state.treeBuildStatus = "processing";
-  renderTreeBuildStatus();
-
-  // 🚨 [추가된 부분 1] 추적 시작을 알리는 콘솔 로그!
-  console.log(`🔄 [백그라운드] 트리 위치 추적 시작... (대상 노드: ${preferredId})`);
-
-  try {
-    while (Date.now() - startedAt <= maxDurationMs) {
-      // 서버 무리를 줄이기 위해 확인 주기를 점점 늘림 (1초 -> 1.5초 -> 2초)
-      const delayMs = attempt === 0 ? 0 : Math.min(1000 + (attempt - 1) * 500, 3000);
-      if (delayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
-
-      try {
-        const applied = await loadRoomHistory(roomId);
-        if (!applied) {
-          return;
-        }
-
-        if (preferredId && state.nodes.some((node) => node.id === preferredId)) {
-          state.selectedNodeId = preferredId;
-        }
-        
-        // 🌟 화면 즉시 업데이트! (이게 있어야 F5 없이 트리가 이동합니다)
-        render(); 
-
-        if (preferredId) {
-          const latestPreferredNode = state.nodes.find((node) => node.id === preferredId) || null;
-          const latestPreferredSignature = buildNodePlacementSignature(latestPreferredNode);
-          
-          const hasPlacementChanged =
-            initialPreferredSignature &&
-            latestPreferredSignature &&
-            latestPreferredSignature !== initialPreferredSignature;
-            
-          if (hasPlacementChanged) {
-            // 🚨 [추가된 부분 2] 자리를 찾았을 때 뜨는 짜릿한 성공 로그!
-            console.log(`✨ [백그라운드 성공] 노드가 올바른 위치로 스냅(Snap) 되었습니다!`);
-            return; // 쿨하게 추적 종료
-          }
-        }
-
-        if (!expectSeedNodes) {
-          // 일반 질문: 자리가 바뀔 때까지 계속 루프를 돕니다.
-        } else {
-          const hasPreferredDepthOneChild = preferredId
-            ? state.nodes.some((node) => node.parentId === preferredId && Number(node.depth) === 1)
-            : state.nodes.some((node) => Number(node.depth) === 1);
-          const hasDepthOneSeedNode = state.nodes.some(
-            (node) => Number(node.depth) === 1 && isAutoSubtopicSeedNode(node)
-          );
-          if (hasPreferredDepthOneChild || hasDepthOneSeedNode) {
-            return;
-          }
-        }
-      } catch (error) {
-        console.warn("Background tree sync failed:", error);
-        return;
-      }
-
-      attempt += 1;
-    }
-  } finally {
-    state.pendingTreeBuildJobs = Math.max(0, state.pendingTreeBuildJobs - 1);
-    if (state.pendingTreeBuildJobs === 0) {
-      state.treeBuildStatus = "completed";
-      renderTreeBuildStatus();
-      console.log("✅ [백그라운드] 트리 동기화 폴링 종료.");
-    }
-  }
-}
-
 async function onSendMessage(event) {
   event.preventDefault();
 
@@ -785,10 +1065,17 @@ async function onSendMessage(event) {
       parentId,
       nextDepth
     });
+    const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: true });
+    if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
+      state.selectedNodeId = persistedNodeId;
+    }
     render();
-    syncRoomHistoryInBackground(state.currentRoomId, persistedNodeId, {
-      expectSeedNodes: looksLikeSeedBootstrapQuestion(question)
-    });
+    if (state.treeBuildStatus === "processing") {
+      startTreeProcessingWatcher(state.currentRoomId, persistedNodeId);
+    } else if (applied) {
+      state.treeNodes = state.nodes;
+      render();
+    }
   } catch (error) {
     if (tempId) {
       state.nodes = state.nodes.filter((node) => node.id !== tempId);
@@ -892,7 +1179,11 @@ async function onDeleteAccount(event) {
     state.chatRooms = [];
     state.currentRoomId = null;
     state.nodes = [];
+    state.treeNodes = [];
+    clearPendingTreeMutations();
     state.selectedNodeId = null;
+    state.treeBuildStatus = "completed";
+    state.treeProcessingWatcherToken++;
     setSettingsMessage("");
     switchView("landing");
     render();
@@ -906,7 +1197,11 @@ function logout() {
   state.chatRooms = [];
   state.currentRoomId = null;
   state.nodes = [];
+  state.treeNodes = [];
+  clearPendingTreeMutations();
   state.selectedNodeId = null;
+  state.treeBuildStatus = "completed";
+  state.treeProcessingWatcherToken++;
   clearSession();
   switchView("landing");
   render();
@@ -927,7 +1222,9 @@ function renderTree() {
   }
   renderTreeBuildStatus();
 
-  if (state.nodes.length === 0) {
+  const treeNodes = state.treeNodes.length ? state.treeNodes : state.nodes;
+
+  if (treeNodes.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
     empty.textContent = "질문을 보내면 첫 노드가 생성됩니다.";
@@ -939,13 +1236,13 @@ function renderTree() {
   }
 
   if (state.treeViewMode === "graph") {
-    renderTreeGraph();
+    renderTreeGraph(treeNodes);
   } else {
-    renderTreeList();
+    renderTreeList(treeNodes);
   }
 
   if (el.nodeCount) {
-    el.nodeCount.textContent = `${state.nodes.length} Nodes`;
+    el.nodeCount.textContent = `${treeNodes.length} Nodes`;
   }
 }
 
@@ -960,13 +1257,13 @@ function renderTreeBuildStatus() {
   el.treeBuildStatus.classList.toggle("completed", !isProcessing);
 }
 
-function renderTreeList() {
-  const roots = buildTree(state.nodes).filter((node) => node.parentId === null);
+function renderTreeList(nodes = state.nodes) {
+  const roots = buildTree(nodes).filter((node) => node.parentId === null);
   roots.forEach((node) => el.treeRoot.appendChild(renderTreeNode(node)));
 }
 
-function renderTreeGraph() {
-  const graph = getTreeGraphLayout(state.nodes);
+function renderTreeGraph(nodes = state.nodes) {
+  const graph = getTreeGraphLayout(nodes);
   const svgNS = "http://www.w3.org/2000/svg";
   const treeTooltip = getOrCreateTreeTooltip();
   const baseNodeRadius = 20;
@@ -986,10 +1283,16 @@ function renderTreeGraph() {
     line.setAttribute("x2", String(link.x2));
     line.setAttribute("y2", String(link.y2));
     line.setAttribute("class", "tree-link");
+    line.dataset.sourceId = String(link.sourceId);
+    line.dataset.targetId = String(link.targetId);
     svg.appendChild(line);
   });
 
   graph.nodes.forEach((node) => {
+    const nodeGroup = document.createElementNS(svgNS, "g");
+    nodeGroup.setAttribute("class", buildGraphNodeGroupClass(node.id));
+    nodeGroup.dataset.nodeId = String(node.id);
+
     const circle = document.createElementNS(svgNS, "circle");
     circle.setAttribute("cx", String(node.x));
     circle.setAttribute("cy", String(node.y));
@@ -1003,20 +1306,24 @@ function renderTreeGraph() {
       circle.classList.remove("hovered");
       circle.setAttribute("r", String(baseNodeRadius));
     };
+    attachGraphDragHandlers(nodeGroup, node.id);
     circle.addEventListener("click", () => {
-      state.selectedNodeId = node.id;
-      render();
+      if (!state.dragState.active) {
+        selectNode(node.id);
+      }
     });
     circle.addEventListener("mouseenter", (event) => {
       emphasizeNode();
+      handleTreeDragHover(node.id);
       showTreeTooltip(treeTooltip, node.title, event);
     });
     circle.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
     circle.addEventListener("mouseleave", () => {
       normalizeNode();
+      handleTreeDragHover(null);
       hideTreeTooltip(treeTooltip);
     });
-    svg.appendChild(circle);
+    nodeGroup.appendChild(circle);
 
     const label = document.createElementNS(svgNS, "text");
     label.setAttribute("x", String(node.x));
@@ -1025,16 +1332,24 @@ function renderTreeGraph() {
     label.textContent = node.title.length > 6 ? `${node.title.slice(0, 6)}...` : node.title;
     label.style.pointerEvents = "auto";
     label.style.cursor = "pointer";
+    label.addEventListener("click", () => {
+      if (!state.dragState.active) {
+        selectNode(node.id);
+      }
+    });
     label.addEventListener("mouseenter", (event) => {
       emphasizeNode();
+      handleTreeDragHover(node.id);
       showTreeTooltip(treeTooltip, node.title, event);
     });
     label.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
     label.addEventListener("mouseleave", () => {
       normalizeNode();
+      handleTreeDragHover(null);
       hideTreeTooltip(treeTooltip);
     });
-    svg.appendChild(label);
+    nodeGroup.appendChild(label);
+    svg.appendChild(nodeGroup);
   });
 
   const canvas = document.createElement("div");
@@ -1085,7 +1400,8 @@ function hideTreeTooltip(tooltip) {
 
 function renderTreeNode(node) {
   const wrapper = document.createElement("div");
-  wrapper.className = "tree-node";
+  wrapper.className = buildTreeNodeClass(node.id);
+  wrapper.dataset.nodeId = node.id;
 
   const button = document.createElement("button");
   button.className = "node-btn";
@@ -1093,13 +1409,18 @@ function renderTreeNode(node) {
   if (node.id === state.selectedNodeId) {
     button.classList.add("active");
   }
+  button.draggable = false;
 
   const time = new Date(node.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   button.innerHTML = `<span class="node-title">${escapeHtml(node.title)}</span><span class="node-meta">Depth ${node.depth} / ${time}</span>`;
   button.addEventListener("click", () => {
-    state.selectedNodeId = node.id;
-    render();
+    if (state.suppressNodeClick) {
+      state.suppressNodeClick = false;
+      return;
+    }
+    selectNode(node.id);
   });
+  attachListDragHandlers(button, node.id);
   wrapper.appendChild(button);
 
   if (node.children.length > 0) {
@@ -1112,6 +1433,421 @@ function renderTreeNode(node) {
   return wrapper;
 }
 
+function buildTreeNodeClass(nodeId) {
+  const classes = ["tree-node"];
+  if (isNodeInDraggedSubtree(nodeId)) {
+    classes.push("drag-subtree");
+  }
+  if (state.dragState.active && state.dragState.sourceNodeId === nodeId) {
+    classes.push("drag-source");
+  }
+  if (state.dragState.active && state.dragState.targetNodeId === nodeId) {
+    if (canMoveNodeUnderTarget(state.dragState.sourceNodeId, nodeId, getTreeSourceNodes())) {
+      classes.push("drop-target");
+    } else {
+      classes.push("invalid-target");
+    }
+  }
+  return classes.join(" ");
+}
+
+function buildGraphNodeGroupClass(nodeId) {
+  const classes = ["tree-node-group"];
+  if (isNodeInDraggedSubtree(nodeId)) {
+    classes.push("drag-subtree");
+  }
+  if (state.dragState.active && state.dragState.sourceNodeId === nodeId) {
+    classes.push("drag-source");
+  }
+  if (state.dragState.active && state.dragState.targetNodeId === nodeId) {
+    if (canMoveNodeUnderTarget(state.dragState.sourceNodeId, nodeId, getTreeSourceNodes())) {
+      classes.push("drop-target");
+    } else {
+      classes.push("invalid-target");
+    }
+  }
+  return classes.join(" ");
+}
+
+function canDragTreeNode(nodeId) {
+  if (state.treeBuildStatus === "processing") {
+    return false;
+  }
+  const node = getNodeById(nodeId);
+  return Boolean(node && node.parentId);
+}
+
+function collectSubtreeIds(nodeId, nodes = state.nodes) {
+  const childrenByParent = new Map();
+  nodes.forEach((node) => {
+    if (!childrenByParent.has(node.parentId || null)) {
+      childrenByParent.set(node.parentId || null, []);
+    }
+    childrenByParent.get(node.parentId || null).push(node.id);
+  });
+
+  const ids = new Set();
+  const stack = [String(nodeId)];
+  while (stack.length) {
+    const current = stack.pop();
+    if (ids.has(current)) {
+      continue;
+    }
+    ids.add(current);
+    const children = childrenByParent.get(current) || [];
+    children.forEach((childId) => stack.push(childId));
+  }
+  return ids;
+}
+
+function normalizeSubtreeDepths(nodes, rootId) {
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map();
+  nodes.forEach((node) => {
+    if (!childrenByParent.has(node.parentId || null)) {
+      childrenByParent.set(node.parentId || null, []);
+    }
+    childrenByParent.get(node.parentId || null).push(node.id);
+  });
+
+  const root = nodeMap.get(rootId);
+  if (!root) {
+    return;
+  }
+
+  const stack = [root.id];
+  while (stack.length) {
+    const currentId = stack.pop();
+    const currentNode = nodeMap.get(currentId);
+    const children = childrenByParent.get(currentId) || [];
+    children.forEach((childId) => {
+      const childNode = nodeMap.get(childId);
+      if (!childNode) {
+        return;
+      }
+      childNode.depth = (Number(currentNode.depth) || 0) + 1;
+      stack.push(childId);
+    });
+  }
+}
+
+function canMoveNodeUnderTarget(sourceNodeId, targetNodeId, nodes = state.nodes) {
+  if (!sourceNodeId || !targetNodeId || String(sourceNodeId) === String(targetNodeId)) {
+    return false;
+  }
+  const sourceNode = nodes.find((node) => node.id === String(sourceNodeId));
+  const targetNode = nodes.find((node) => node.id === String(targetNodeId));
+  if (!sourceNode || !targetNode) {
+    return false;
+  }
+  if (collectSubtreeIds(sourceNode.id, nodes).has(targetNode.id)) {
+    return false;
+  }
+  return true;
+}
+
+function applyTreeMutationLocally(mutation) {
+  if (!mutation?.type) {
+    return false;
+  }
+
+  state.pendingTreeMutations = [...state.pendingTreeMutations, mutation];
+  const nextNodes = applyPendingTreeMutationsTo(getTreeSourceNodes());
+  state.nodes = nextNodes;
+  state.treeNodes = nextNodes;
+
+  if (mutation.type === "delete_subtree") {
+    const selectedStillExists = state.selectedNodeId && nextNodes.some((node) => node.id === state.selectedNodeId);
+    if (!selectedStillExists) {
+      state.selectedNodeId = mutation.fallbackSelectedNodeId || null;
+    }
+  }
+
+  render();
+  return true;
+}
+
+function onDeleteSelectedNode() {
+  const selected = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+  if (!selected) {
+    return;
+  }
+  if (state.treeBuildStatus === "processing") {
+    alert("트리 구성 중에는 노드를 편집할 수 없습니다.");
+    return;
+  }
+
+  const subtreeIds = collectSubtreeIds(selected.id, getTreeSourceNodes());
+  const ok = confirm(`선택한 노드와 하위 ${Math.max(0, subtreeIds.size - 1)}개 노드를 함께 삭제하시겠습니까?`);
+  if (!ok) {
+    return;
+  }
+
+  const fallbackSelectedNodeId = selected.parentId || null;
+  applyTreeMutationLocally({
+    type: "delete_subtree",
+    nodeId: selected.id,
+    fallbackSelectedNodeId
+  });
+}
+
+function onTreeNodeDragStart(event, nodeId) {
+  if (!canDragTreeNode(nodeId)) {
+    event.preventDefault();
+    return;
+  }
+  state.dragState = {
+    sourceNodeId: String(nodeId),
+    targetNodeId: null,
+    active: true,
+    previewElement: null,
+    previewFollowsPointer: true,
+    grabOffsetX: 0,
+    grabOffsetY: 0,
+    pointerX: event.clientX || 0,
+    pointerY: event.clientY || 0
+  };
+  document.body.classList.add("tree-dragging");
+  const preview = ensureTreeDragPreview(nodeId);
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", String(nodeId));
+  if (preview) {
+    const buttonRect = event.currentTarget?.getBoundingClientRect?.();
+    state.dragState.grabOffsetX = buttonRect ? Math.max(0, event.clientX - buttonRect.left) : 24;
+    state.dragState.grabOffsetY = buttonRect ? Math.max(0, event.clientY - buttonRect.top) : 20;
+    event.dataTransfer.setDragImage(getTransparentDragImage(), 0, 0);
+  }
+  updateTreeDragPointer(event.clientX, event.clientY);
+}
+
+function onTreeNodeDrag(event) {
+  updateTreeDragPointer(event.clientX, event.clientY);
+}
+
+function onDocumentTreeDragOver(event) {
+  if (!state.dragState.active || state.treeViewMode !== "list") {
+    return;
+  }
+  updateTreeDragPointer(event.clientX, event.clientY);
+}
+
+function onTreeNodeDragOver(event, nodeId) {
+  if (!state.dragState.active) {
+    return;
+  }
+  event.preventDefault();
+  updateTreeDragPointer(event.clientX, event.clientY);
+  if (state.dragState.targetNodeId === String(nodeId)) {
+    return;
+  }
+  state.dragState.targetNodeId = String(nodeId);
+  event.dataTransfer.dropEffect = canMoveNodeUnderTarget(state.dragState.sourceNodeId, nodeId, getTreeSourceNodes()) ? "move" : "none";
+  renderTree();
+}
+
+function onTreeNodeDragLeave(nodeId) {
+  if (state.dragState.targetNodeId === String(nodeId)) {
+    state.dragState.targetNodeId = null;
+    renderTree();
+  }
+}
+
+function onTreeNodeDrop(event, targetNodeId) {
+  event.preventDefault();
+  updateTreeDragPointer(event.clientX, event.clientY);
+  commitTreeMove(state.dragState.sourceNodeId, String(targetNodeId));
+}
+
+function onTreeNodeDragEnd() {
+  clearTreeDragState();
+  renderTree();
+}
+
+function handleTreeDragHover(nodeId) {
+  if (!state.dragState.active) {
+    return;
+  }
+  const nextTargetId = nodeId ? String(nodeId) : null;
+  if (state.dragState.targetNodeId === nextTargetId) {
+    return;
+  }
+  state.dragState.targetNodeId = nextTargetId;
+  renderTree();
+}
+
+function attachGraphDragHandlers(element, nodeId) {
+  element.style.cursor = canDragTreeNode(nodeId) ? "grab" : "pointer";
+
+  element.addEventListener("pointerdown", (event) => {
+    if (!canDragTreeNode(nodeId) || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+
+    const onMove = (moveEvent) => {
+      if (dragging) {
+        return;
+      }
+      const dx = Math.abs(moveEvent.clientX - startX);
+      const dy = Math.abs(moveEvent.clientY - startY);
+      if (dx < 6 && dy < 6) {
+        return;
+      }
+      dragging = true;
+      state.dragState = {
+        sourceNodeId: String(nodeId),
+        targetNodeId: null,
+        active: true,
+        previewElement: null,
+        previewFollowsPointer: true,
+        grabOffsetX: 0,
+        grabOffsetY: 0,
+        pointerX: moveEvent.clientX,
+        pointerY: moveEvent.clientY
+      };
+      document.body.classList.add("tree-dragging");
+      const preview = ensureTreeDragPreview(nodeId);
+      if (preview) {
+        state.dragState.grabOffsetX = Number(preview.dataset.anchorX) || (preview.getBoundingClientRect().width / 2);
+        state.dragState.grabOffsetY = Number(preview.dataset.anchorY) || (preview.getBoundingClientRect().height / 2);
+      }
+      renderTree();
+      updateTreeDragPointer(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const onDragMove = (moveEvent) => {
+      if (!dragging) {
+        onMove(moveEvent);
+        return;
+      }
+      updateTreeDragPointer(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onDragMove);
+      window.removeEventListener("pointerup", onUp);
+      if (!dragging) {
+        selectNode(nodeId);
+        return;
+      }
+      const sourceNodeId = state.dragState.sourceNodeId;
+      const targetNodeId = state.dragState.targetNodeId;
+      clearTreeDragState();
+      if (sourceNodeId && targetNodeId) {
+        commitTreeMove(sourceNodeId, targetNodeId);
+      } else {
+        renderTree();
+      }
+    };
+
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", onUp);
+  });
+}
+
+function attachListDragHandlers(element, nodeId) {
+  element.style.cursor = canDragTreeNode(nodeId) ? "grab" : "pointer";
+
+  element.addEventListener("pointerdown", (event) => {
+    if (!canDragTreeNode(nodeId) || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+
+    const onMove = (moveEvent) => {
+      const dx = Math.abs(moveEvent.clientX - startX);
+      const dy = Math.abs(moveEvent.clientY - startY);
+      if (!dragging) {
+        if (dx < 6 && dy < 6) {
+          return;
+        }
+        dragging = true;
+        state.dragState = {
+          sourceNodeId: String(nodeId),
+          targetNodeId: null,
+          active: true,
+          previewElement: null,
+          previewFollowsPointer: true,
+          grabOffsetX: 0,
+          grabOffsetY: 0,
+          pointerX: moveEvent.clientX,
+          pointerY: moveEvent.clientY
+        };
+        document.body.classList.add("tree-dragging");
+        const preview = ensureTreeDragPreview(nodeId);
+        const rect = element.getBoundingClientRect();
+        state.dragState.grabOffsetX = Math.max(0, moveEvent.clientX - rect.left);
+        state.dragState.grabOffsetY = Math.max(0, moveEvent.clientY - rect.top);
+        renderTree();
+        updateTreeDragPointer(moveEvent.clientX, moveEvent.clientY);
+      } else {
+        updateTreeDragPointer(moveEvent.clientX, moveEvent.clientY);
+      }
+
+      const hoveredElement = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const nextTarget = hoveredElement?.closest?.(".tree-node[data-node-id]")?.dataset?.nodeId || null;
+      if (state.dragState.targetNodeId !== nextTarget) {
+        state.dragState.targetNodeId = nextTarget;
+        renderTree();
+      }
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (!dragging) {
+        selectNode(nodeId);
+        return;
+      }
+      const sourceNodeId = state.dragState.sourceNodeId;
+      const targetNodeId = state.dragState.targetNodeId;
+      state.suppressNodeClick = true;
+      clearTreeDragState();
+      if (sourceNodeId && targetNodeId) {
+        commitTreeMove(sourceNodeId, targetNodeId);
+      } else {
+        renderTree();
+      }
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+}
+
+function commitTreeMove(sourceNodeId, targetNodeId) {
+  if (!sourceNodeId || !targetNodeId) {
+    clearTreeDragState();
+    renderTree();
+    return;
+  }
+  if (state.treeBuildStatus === "processing") {
+    alert("트리 구성 중에는 노드를 편집할 수 없습니다.");
+    clearTreeDragState();
+    renderTree();
+    return;
+  }
+  if (!canMoveNodeUnderTarget(sourceNodeId, targetNodeId, getTreeSourceNodes())) {
+    clearTreeDragState();
+    renderTree();
+    return;
+  }
+
+  applyTreeMutationLocally({
+    type: "move_subtree",
+    nodeId: String(sourceNodeId),
+    newParentId: String(targetNodeId)
+  });
+  clearTreeDragState();
+  renderTree();
+}
+
 function renderChat() {
   if (!el.chatFeed) {
     return;
@@ -1120,12 +1856,19 @@ function renderChat() {
   el.chatFeed.innerHTML = "";
 
   const pathNodes = state.selectedNodeId ? getPathToNode(state.selectedNodeId) : [];
+  let selectedBubble = null;
   pathNodes.forEach((node) => {
     if (isAutoSubtopicSeedNode(node)) {
       return;
     }
-    el.chatFeed.appendChild(makeBubble("user", node.userQuestion, node.timestamp));
-    el.chatFeed.appendChild(makeBubble("ai", node.aiAnswer, node.timestamp + 1000));
+    const isSelected = node.id === state.selectedNodeId;
+    const userBubble = makeBubble("user", node.userQuestion, node.timestamp, node.id, isSelected);
+    const aiBubble = makeBubble("ai", node.aiAnswer, node.timestamp + 1000, node.id, isSelected);
+    el.chatFeed.appendChild(userBubble);
+    el.chatFeed.appendChild(aiBubble);
+    if (isSelected) {
+      selectedBubble = aiBubble;
+    }
   });
 
   if (pathNodes.length === 0) {
@@ -1138,7 +1881,21 @@ function renderChat() {
   if (el.branchTag) {
     el.branchTag.textContent = selected ? `${roomLabel} / ${selected.title}` : roomLabel;
   }
-  el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
+  if (selectedBubble) {
+    requestAnimationFrame(() => {
+      selectedBubble.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+    });
+  } else {
+    el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
+  }
+}
+
+function selectNode(nodeId) {
+  if (nodeId == null) {
+    return;
+  }
+  state.selectedNodeId = String(nodeId);
+  render();
 }
 
 function isAutoSubtopicSeedNode(node) {
@@ -1158,6 +1915,8 @@ async function renderInsights() {
   if (!node) {
     if (el.selectedNodeTitle) el.selectedNodeTitle.textContent = "선택 없음";
     if (el.selectedNodeMeta) el.selectedNodeMeta.textContent = "Depth - / Parent -";
+    if (el.deleteSelectedNodeBtn) el.deleteSelectedNodeBtn.disabled = true;
+    if (el.treeEditHint) el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
     if (el.depthBar) {
       el.depthBar.style.width = "10%";
       el.depthBar.style.background = "linear-gradient(90deg, #43dab8, #62b4d8)";
@@ -1175,11 +1934,24 @@ async function renderInsights() {
 
   const depth = node.depth;
   const ratio = Math.min(100, Math.round((depth / 7) * 100));
+  const canEditTree = state.treeBuildStatus !== "processing";
 
   el.selectedNodeTitle.textContent = node.title;
   
   // 2. [수정 포인트] ID 숫자 대신 부모의 제목을 출력합니다.
   el.selectedNodeMeta.textContent = `Depth ${node.depth} / Parent: ${parentTitle}`;
+  if (el.deleteSelectedNodeBtn) {
+    el.deleteSelectedNodeBtn.disabled = !canEditTree;
+  }
+  if (el.treeEditHint) {
+    if (!canEditTree) {
+      el.treeEditHint.textContent = "트리 구성 중에는 편집할 수 없습니다.";
+    } else if (!node.parentId) {
+      el.treeEditHint.textContent = "루트 노드는 드래그 이동할 수 없지만 삭제는 가능합니다.";
+    } else {
+      el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
+    }
+  }
   
   el.depthBar.style.width = `${Math.max(10, ratio)}%`;
 
@@ -1252,9 +2024,15 @@ function setupSingleResizer({ handle, panel, cssVar, min, max, direction }) {
   });
 }
 
-function makeBubble(role, text, timestamp) {
+function makeBubble(role, text, timestamp, nodeId = null, isSelected = false) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${role}`;
+  if (isSelected) {
+    bubble.classList.add("selected");
+  }
+  if (nodeId != null) {
+    bubble.dataset.nodeId = String(nodeId);
+  }
   const time = new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   bubble.innerHTML = `${escapeHtml(text)}<span class="time">${role === "user" ? "You" : "AI"} / ${time}</span>`;
   return bubble;
@@ -1321,7 +2099,21 @@ function buildTree(nodes) {
       map.get(node.parentId).children.push(node);
     }
   });
-  return [...map.values()];
+  const ordered = [...map.values()];
+  ordered.forEach((node) => {
+    node.children.sort(compareTreeNodeOrder);
+  });
+  ordered.sort(compareTreeNodeOrder);
+  return ordered;
+}
+
+function compareTreeNodeOrder(left, right) {
+  const leftTime = Number(left?.timestamp) || 0;
+  const rightTime = Number(right?.timestamp) || 0;
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return String(left?.id || "").localeCompare(String(right?.id || ""));
 }
 
 function getTreeGraphLayout(nodes) {
@@ -1373,6 +2165,8 @@ function getTreeGraphLayout(nodes) {
       const target = graphNodeMap.get(child.id);
       if (parent && target) {
         links.push({
+          sourceId: parent.id,
+          targetId: target.id,
           x1: parent.x,
           y1: parent.y + 18,
           x2: target.x,
@@ -1486,6 +2280,7 @@ function escapeHtml(value) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
 
 
 
