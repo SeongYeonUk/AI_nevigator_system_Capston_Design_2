@@ -1,4 +1,3 @@
-
 package com.rabbit.domain.chat.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -2040,6 +2039,7 @@ public class ChatService {
                     }
                 }
 
+
                 // 🚨 [수정 2] 0점짜리가 뎁스빨로 우승하는 것을 원천 차단!
                 // GPT가 70점 이상(논리적 부모로 인정)을 준 경우에만, 타이브레이커 느낌으로 깊이에 따른 소폭의 가산점(+5점)을 줍니다.
                 int adjustedScore = score;
@@ -2066,6 +2066,84 @@ public class ChatService {
             log.error("Engineering Pipeline Error: {}", e.getMessage());
         }
         return candidates.get(0);
+    }
+
+
+    // 노드 및 하위 트리 전체 삭제
+    @Transactional
+    public void deleteNodeAndSubtree(String authorization, Long roomId, Long nodeId) {
+        validateAuthorization(authorization);
+
+        ChatMessage targetNode = chatMessageRepository.findById(nodeId)
+                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 노드입니다."));
+
+        // 1. 하위 트리(자식들)를 바닥부터 싹 다 지웁니다.
+        deleteChildrenRecursively(targetNode.getId());
+
+        // 2. 마지막으로 자기 자신을 깔끔하게 삭제합니다.
+        chatMessageRepository.delete(targetNode);
+        log.info("노드 및 하위 트리 삭제 완료: {}", nodeId);
+    }
+
+    private void deleteChildrenRecursively(Long parentId) {
+        List<ChatMessage> children = chatMessageRepository.findByParentId(parentId);
+        for (ChatMessage child : children) {
+            deleteChildrenRecursively(child.getId()); // 바닥 끝까지 파고들기
+            chatMessageRepository.delete(child); // 밑에서부터 위로 차례대로 삭제
+        }
+    }
+
+     // 노드 이동 (부모 변경 및 Depth 일괄 업데이트)
+    @Transactional
+    public void moveNode(String authorization, Long roomId, Long nodeId, Long newParentId) {
+        validateAuthorization(authorization);
+
+        if (nodeId.equals(newParentId)) {
+            throw new IllegalArgumentException("자기 자신 밑으로 이동할 수 없습니다.");
+        }
+
+        ChatMessage sourceNode = chatMessageRepository.findById(nodeId)
+                .orElseThrow(() -> new IllegalArgumentException("이동할 노드를 찾을 수 없습니다."));
+
+        ChatMessage targetNode = chatMessageRepository.findById(newParentId)
+                .orElseThrow(() -> new IllegalArgumentException("새로운 부모 노드를 찾을 수 없습니다."));
+
+        // 🚨 가장 중요한 방어 로직 (순환 참조 방지)
+        // 내 자식이나 손자 밑으로 내가 들어가려고 하면 무한 루프에 빠집니다!
+        if (isDescendant(nodeId, newParentId)) {
+            throw new IllegalArgumentException("자신의 하위 노드로는 이동할 수 없습니다.");
+        }
+
+        // 1. 뎁스 차이 계산 (이사 갈 집의 뎁스 + 1 - 내 현재 뎁스)
+        int nextDepth = targetNode.getDepth() + 1;
+        int depthDiff = nextDepth - sourceNode.getDepth();
+
+        // 2. 엔티티에 만들어두신 메서드 찰떡 활용! (부모와 뎁스 동시 변경)
+        sourceNode.updateTreePlacement(targetNode, nextDepth);
+
+        // 3. 내 밑에 딸려가는 자식들의 뎁스도 일괄적으로 싹 맞춰줍니다.
+        if (depthDiff != 0) {
+            updateChildrenDepthRecursively(sourceNode.getId(), depthDiff);
+        }
+        log.info("노드 이동 완료: {} -> 새 부모: {}", nodeId, newParentId);
+    }
+
+    private void updateChildrenDepthRecursively(Long parentId, int depthDiff) {
+        List<ChatMessage> children = chatMessageRepository.findByParentId(parentId);
+        for (ChatMessage child : children) {
+            child.updateDepth(child.getDepth() + depthDiff);
+            updateChildrenDepthRecursively(child.getId(), depthDiff);
+        }
+    }
+
+    // 대상(targetId)이 나(parentId)의 핏줄(자손)인지 확인하는 헬퍼 메서드
+    private boolean isDescendant(Long parentId, Long targetId) {
+        List<ChatMessage> children = chatMessageRepository.findByParentId(parentId);
+        for (ChatMessage child : children) {
+            if (child.getId().equals(targetId)) return true; // 내 자식 중에 목적지가 있으면 컷!
+            if (isDescendant(child.getId(), targetId)) return true; // 손자 증손자까지 탐색
+        }
+        return false;
     }
 
 

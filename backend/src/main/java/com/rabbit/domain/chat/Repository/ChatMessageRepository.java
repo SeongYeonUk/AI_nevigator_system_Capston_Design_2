@@ -17,4 +17,8 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
 
     @Modifying
     void deleteAllByChatRoomId(Long roomId);
+
+    // 특정 부모를 가진 자식 노드들 찾기
+    List<ChatMessage> findByParentId(Long parentId);
+
 }
