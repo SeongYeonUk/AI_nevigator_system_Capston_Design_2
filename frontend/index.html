@@ -175,7 +175,7 @@
             <h3>학습 인사이트</h3>
           </div>
 
-          <div class="insight-block">
+          <div class="insight-block selected-node-block">
             <h4>선택 노드</h4>
             <p id="selectedNodeTitle">루트 노드</p>
             <p id="selectedNodeMeta" class="muted">Depth 0 / Parent 없음</p>
@@ -190,12 +190,8 @@
           </div>
 
           <div class="insight-block">
-            <h4>사용 안내</h4>
-            <ul>
-              <li>트리 노드를 클릭하면 해당 지점으로 이동합니다.</li>
-              <li>과거 노드 선택 후 질문하면 새 분기가 생성됩니다.</li>
-              <li>깊이가 깊어지면 이탈 알림이 표시됩니다.</li>
-            </ul>
+            <h4>대화 요약</h4>
+            <div id="conversationSummaryList" class="summary-list">선택한 노드의 질문/답변 1쌍을 핵심 어구로 요약합니다.</div>
           </div>
         </aside>
       </section>
@@ -245,7 +241,7 @@
     </section>
   </main>
 
-  <script type="module" src="js/main.js?v=20260319-1"></script>
+  <script type="module" src="js/main.js?v=20260329-1"></script>
   <script>
     (function setupAuthViewFallback() {
       function toggleSection(targetView) {

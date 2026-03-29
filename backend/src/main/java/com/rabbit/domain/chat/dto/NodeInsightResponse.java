@@ -3,6 +3,8 @@ package com.rabbit.domain.chat.dto;
 import lombok.Builder;
 import lombok.Getter;
 
+import java.util.List;
+
 @Getter
 @Builder
 public class NodeInsightResponse {
@@ -11,4 +13,5 @@ public class NodeInsightResponse {
     private String parentPath;
     private double progressRatio;
     private String alertMessage;
+    private List<ConversationSummaryItemResponse> conversationSummary;
 }

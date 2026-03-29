@@ -1,0 +1,21 @@
+### Java & Gradle ###
+/build/
+.gradle/
+!gradle-wrapper.jar
+
+### IntelliJ ###
+.idea/
+*.iml
+out/
+gen/
+
+### Sensitive Data (보안 핵심!) ###
+# DB 정보나 JWT Secret Key가 담긴 파일은 절대 올리지 않습니다
+application-secret.yml
+application-auth.properties
+.env
+*.key
+
+### OS ###
+.DS_Store
+Thumbs.db

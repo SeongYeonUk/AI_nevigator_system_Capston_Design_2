@@ -3,6 +3,7 @@ import {
   askChatApi,
   createRoomApi,
   deleteRoomApi,
+  getNodeInsightApi,
   getRoomHistoryApi,
   getRoomTreeApi,
   getRoomsApi,
@@ -36,6 +37,9 @@ const state = {
   treeBuildStatus: "completed",
   pendingTreeBuildJobs: 0,
   treeProcessingWatcherToken: 0,
+  insightCache: new Map(),
+  pendingInsightKeys: new Set(),
+  insightRequestToken: 0,
   dragState: {
     sourceNodeId: null,
     targetNodeId: null,
@@ -110,6 +114,7 @@ const el = {
   treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
   driftAlert: document.getElementById("driftAlert"),
+  conversationSummaryList: document.getElementById("conversationSummaryList"),
 
   treeResizeHandle: document.getElementById("treeResizeHandle"),
   insightResizeHandle: document.getElementById("insightResizeHandle"),
@@ -1911,7 +1916,7 @@ function isAutoSubtopicSeedNode(node) {
 
 async function renderInsights() {
   const node = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
-  
+
   if (!node) {
     if (el.selectedNodeTitle) el.selectedNodeTitle.textContent = "선택 없음";
     if (el.selectedNodeMeta) el.selectedNodeMeta.textContent = "Depth - / Parent -";
@@ -1925,20 +1930,15 @@ async function renderInsights() {
       el.driftAlert.textContent = "질문을 입력하면 학습 경로가 시작됩니다.";
       el.driftAlert.classList.remove("warn");
     }
+    renderConversationSummaryPlaceholder("선택한 노드의 질문/답변 1쌍을 핵심 어구로 요약합니다.");
+    state.insightRequestToken++;
     return;
   }
 
-  // 1. 부모 노드 객체를 찾아서 제목을 가져옵니다.
-  const parentNode = node.parentId ? getNodeById(node.parentId) : null;
-  const parentTitle = parentNode ? parentNode.title : "없음 (최상위)";
-
-  const depth = node.depth;
-  const ratio = Math.min(100, Math.round((depth / 7) * 100));
+  const parentTitle = getParentTitleForNode(node);
   const canEditTree = state.treeBuildStatus !== "processing";
 
-  el.selectedNodeTitle.textContent = node.title;
-  
-  // 2. [수정 포인트] ID 숫자 대신 부모의 제목을 출력합니다.
+  el.selectedNodeTitle.textContent = node.title || "선택 노드";
   el.selectedNodeMeta.textContent = `Depth ${node.depth} / Parent: ${parentTitle}`;
   if (el.deleteSelectedNodeBtn) {
     el.deleteSelectedNodeBtn.disabled = !canEditTree;
@@ -1952,19 +1952,162 @@ async function renderInsights() {
       el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
     }
   }
-  
-  el.depthBar.style.width = `${Math.max(10, ratio)}%`;
 
-  // 3. 깊이에 따른 경고 로직 (기존 유지)
+  applyInsightDepthUi(node.depth);
+
+  const cacheKey = buildInsightCacheKey(node.id);
+  const cachedInsight = state.insightCache.get(cacheKey);
+  if (cachedInsight) {
+    applyInsightPayload(cachedInsight, node);
+    return;
+  }
+
+  renderConversationSummaryPlaceholder("대화 요약을 불러오는 중...");
+  if (state.pendingInsightKeys.has(cacheKey)) {
+    return;
+  }
+
+  const requestToken = ++state.insightRequestToken;
+  state.pendingInsightKeys.add(cacheKey);
+
+  try {
+    const insight = await getNodeInsightApi(node.id, state.currentSession?.accessToken || "");
+    state.insightCache.set(cacheKey, insight || {});
+
+    if (requestToken !== state.insightRequestToken) {
+      return;
+    }
+
+    const currentNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+    if (!currentNode || String(currentNode.id) !== String(node.id)) {
+      return;
+    }
+
+    applyInsightPayload(insight || {}, currentNode);
+  } catch (error) {
+    if (requestToken !== state.insightRequestToken) {
+      return;
+    }
+    renderConversationSummaryPlaceholder("대화 요약을 불러오지 못했습니다.");
+  } finally {
+    state.pendingInsightKeys.delete(cacheKey);
+  }
+}
+
+function buildInsightCacheKey(nodeId) {
+  return `${roomIdSafe(state.currentRoomId)}:${String(nodeId)}`;
+}
+
+function getParentTitleForNode(node) {
+  const parentNode = node?.parentId ? getNodeById(node.parentId) : null;
+  return parentNode ? parentNode.title : "없음 (최상위)";
+}
+
+function applyInsightPayload(insight, fallbackNode) {
+  const depthFromApi = Number(insight?.depth);
+  const depth = Number.isFinite(depthFromApi) ? depthFromApi : Number(fallbackNode?.depth || 0);
+  const title = String(insight?.title || fallbackNode?.title || "선택 노드").trim();
+
+  if (el.selectedNodeTitle) {
+    el.selectedNodeTitle.textContent = title || "선택 노드";
+  }
+  if (el.selectedNodeMeta) {
+    el.selectedNodeMeta.textContent = `Depth ${depth} / Parent: ${getParentTitleForNode(fallbackNode)}`;
+  }
+
+  applyInsightDepthUi(depth);
+  renderConversationSummary(insight?.conversationSummary);
+}
+
+function applyInsightDepthUi(depthValue) {
+  const depth = Number(depthValue) || 0;
+  const ratio = Math.min(100, Math.round((depth / 7) * 100));
+
+  if (el.depthBar) {
+    el.depthBar.style.width = `${Math.max(10, ratio)}%`;
+  }
+
   if (depth >= 5) {
-    el.depthBar.style.background = "linear-gradient(90deg, #f7d16a, #ff8d7a)";
-    el.driftAlert.textContent = "주의: 경로 깊이가 높습니다. 목표와의 정합성을 다시 확인하세요.";
-    el.driftAlert.classList.add("warn");
-  } else {
+    if (el.depthBar) {
+      el.depthBar.style.background = "linear-gradient(90deg, #f7d16a, #ff8d7a)";
+    }
+    if (el.driftAlert) {
+      el.driftAlert.textContent = "주의: 경로 깊이가 높습니다. 목표와의 정합성을 다시 확인하세요.";
+      el.driftAlert.classList.add("warn");
+    }
+    return;
+  }
+
+  if (el.depthBar) {
     el.depthBar.style.background = "linear-gradient(90deg, #43dab8, #62b4d8)";
+  }
+  if (el.driftAlert) {
     el.driftAlert.textContent = "정상 범위: 학습 경로가 안정적으로 유지되고 있습니다.";
     el.driftAlert.classList.remove("warn");
   }
+}
+
+function renderConversationSummary(items) {
+  if (!el.conversationSummaryList) {
+    return;
+  }
+
+  const summaryItems = Array.isArray(items) ? items : [];
+  if (summaryItems.length === 0) {
+    renderConversationSummaryPlaceholder("선택 노드 요약을 생성할 수 없습니다.");
+    return;
+  }
+
+  el.conversationSummaryList.innerHTML = "";
+
+  summaryItems.forEach((item, index) => {
+    const article = document.createElement("article");
+    article.className = "summary-item";
+
+    const head = document.createElement("div");
+    head.className = "summary-item-head";
+
+    const order = document.createElement("span");
+    order.className = "summary-item-index";
+    order.textContent = `${index + 1}.`;
+
+    const keyword = document.createElement("strong");
+    keyword.className = "summary-item-keyword";
+    const keywordText = String(item?.keyword || "").trim();
+    keyword.textContent = keywordText || `핵심 ${index + 1}`;
+
+    head.appendChild(order);
+    head.appendChild(keyword);
+    article.appendChild(head);
+
+    const details = Array.isArray(item?.details) ? item.details : [];
+    if (details.length === 0) {
+      const detail = document.createElement("p");
+      detail.className = "summary-item-detail";
+      detail.textContent = "핵심 내용 정리";
+      article.appendChild(detail);
+    } else {
+      details.forEach((detailText) => {
+        const detail = document.createElement("p");
+        detail.className = "summary-item-detail";
+        const normalizedDetail = String(detailText || "").replace(/\s+$/g, "");
+        detail.textContent = normalizedDetail;
+        if (normalizedDetail.trim()) {
+          article.appendChild(detail);
+        }
+      });
+    }
+
+    el.conversationSummaryList.appendChild(article);
+  });
+}
+
+function renderConversationSummaryPlaceholder(message) {
+  if (!el.conversationSummaryList) {
+    return;
+  }
+  const text = String(message || "").trim() || "요약이 준비되면 여기에 표시됩니다.";
+  el.conversationSummaryList.innerHTML = `<p class="summary-placeholder">${escapeHtml(text)}</p>`;
 }
 
 function setupPanelResizers() {

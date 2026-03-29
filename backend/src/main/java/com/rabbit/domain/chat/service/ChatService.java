@@ -8,6 +8,7 @@ import com.rabbit.domain.chat.Repository.ChatRoomRepository;
 import com.rabbit.domain.chat.dto.ChatHistoryResponse;
 import com.rabbit.domain.chat.dto.ChatResponse;
 import com.rabbit.domain.chat.dto.ChatRoomResponse;
+import com.rabbit.domain.chat.dto.ConversationSummaryItemResponse;
 import com.rabbit.domain.chat.dto.ConversationTreeNodeResponse;
 import com.rabbit.domain.chat.dto.ConversationTreeResponse;
 import com.rabbit.domain.chat.dto.NodeInsightResponse;
@@ -87,6 +88,7 @@ public class ChatService {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserRepository userRepository;
     private final TransactionTemplate transactionTemplate;
+    private final ConversationInsightSummaryService conversationInsightSummaryService;
     private final Map<Long, AtomicInteger> roomTreeProcessingCounters = new ConcurrentHashMap<>();
 
     @Transactional
@@ -1738,9 +1740,8 @@ public class ChatService {
         }
 
         double ratio = Math.min(100, ((double) node.getDepth() / 7) * 100);
-        String titleSource = (node.getNodeTitle() != null && !node.getNodeTitle().isBlank())
-                ? node.getNodeTitle()
-                : node.getContent();
+        String titleSource = resolveInsightTitle(node);
+        List<ConversationSummaryItemResponse> conversationSummary = conversationInsightSummaryService.summarize(node);
 
         return NodeInsightResponse.builder()
                 .title(titleSource.substring(0, Math.min(titleSource.length(), 24)))
@@ -1748,7 +1749,34 @@ public class ChatService {
                 .parentPath(parentPath)
                 .progressRatio(ratio)
                 .alertMessage(node.getDepth() >= 5 ? "Warning: depth is high." : "Stable.")
+                .conversationSummary(conversationSummary)
                 .build();
+    }
+
+    private String resolveInsightTitle(ChatMessage node) {
+        if (node == null) {
+            return "";
+        }
+
+        if (node.getSender() == SenderRole.AI) {
+            ChatMessage userNode = node.getParent();
+            if (userNode != null) {
+                if (userNode.getNodeTitle() != null && !userNode.getNodeTitle().isBlank()) {
+                    return userNode.getNodeTitle().trim();
+                }
+                String userContent = stripSystemPrefix(defaultString(userNode.getContent()));
+                if (!userContent.isBlank()) {
+                    return userContent;
+                }
+            }
+        }
+
+        if (node.getNodeTitle() != null && !node.getNodeTitle().isBlank()) {
+            return node.getNodeTitle().trim();
+        }
+
+        String content = stripSystemPrefix(defaultString(node.getContent()));
+        return content.isBlank() ? "Untitled" : content;
     }
 
     private String compactNodeTitle(ChatMessage message) {

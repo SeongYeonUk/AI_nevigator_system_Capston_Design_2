@@ -33,4 +33,15 @@ public interface ConversationTreeAiService {
             "Do not explain and do not add numbering."
     })
     String generateSubtopicHints(@UserMessage String prompt);
+
+    @SystemMessage({
+            "You summarize exactly one selected Q&A pair into compact key phrases.",
+            "Do not copy original long sentences.",
+            "Use short keyword-like Korean phrases whenever possible.",
+            "Do not end phrases with sentence endings like '합니다', '입니다', '이다'.",
+            "Exclude generic closing prompts asking for additional questions.",
+            "Return JSON only.",
+            "Schema: {\"summary_items\":[{\"keyword\":\"...\",\"details\":[\"...\",\"...\"]}]}"
+    })
+    String summarizeSelectedNodeQa(@UserMessage String prompt);
 }
