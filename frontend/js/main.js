@@ -201,6 +201,13 @@ function getTreeSourceNodes() {
   return state.treeNodes.length ? state.treeNodes : state.nodes;
 }
 
+function getRenderableTreeNodes() {
+  if (state.treeBuildStatus === "processing") {
+    return state.treeNodes;
+  }
+  return state.treeNodes.length ? state.treeNodes : state.nodes;
+}
+
 function clearTreeDragState() {
   if (state.dragState.previewElement?.remove) {
     state.dragState.previewElement.remove();
@@ -1027,6 +1034,7 @@ async function onSendMessage(event) {
 
   let tempId = null;
   const previousSelectedNodeId = state.selectedNodeId;
+  const previousTreeBuildStatus = state.treeBuildStatus;
 
   try {
     if (!state.currentRoomId) {
@@ -1049,6 +1057,7 @@ async function onSendMessage(event) {
       depth: nextDepth,
       timestamp: Date.now()
     });
+    state.treeBuildStatus = "processing";
     state.selectedNodeId = tempId;
     render();
 
@@ -1086,6 +1095,7 @@ async function onSendMessage(event) {
       state.nodes = state.nodes.filter((node) => node.id !== tempId);
       state.selectedNodeId = previousSelectedNodeId;
     }
+    state.treeBuildStatus = previousTreeBuildStatus;
     setAuthMessage(`전송 실패: ${toUiError(error)}`, "error");
     render();
   }
@@ -1227,7 +1237,7 @@ function renderTree() {
   }
   renderTreeBuildStatus();
 
-  const treeNodes = state.treeNodes.length ? state.treeNodes : state.nodes;
+  const treeNodes = getRenderableTreeNodes();
 
   if (treeNodes.length === 0) {
     const empty = document.createElement("p");
