@@ -179,6 +179,7 @@
             <h4>선택 노드</h4>
             <p id="selectedNodeTitle">루트 노드</p>
             <p id="selectedNodeMeta" class="muted">Depth 0 / Parent 없음</p>
+            <button id="rebuildConversationBtn" type="button" class="btn btn-ghost btn-sm rebuild-btn">이 경로로 새 대화</button>
           </div>
 
           <div class="insight-block">
@@ -239,6 +240,30 @@
         <p id="settingsMsg" class="message"></p>
       </div>
     </section>
+
+    <div id="rebuildModalBackdrop" class="modal-backdrop hidden">
+      <div class="modal-card glass rebuild-modal" role="dialog" aria-modal="true" aria-labelledby="rebuildModalTitle">
+        <div class="panel-head">
+          <h3 id="rebuildModalTitle">새 대화 재구성</h3>
+          <button id="rebuildModalCloseBtn" class="icon-btn" type="button" aria-label="닫기">×</button>
+        </div>
+        <div class="rebuild-modal-body">
+          <p class="muted">기본 경로는 항상 포함됩니다.</p>
+          <div class="rebuild-path-block">
+            <span class="rebuild-section-label">기본 경로</span>
+            <p id="rebuildPathPreview" class="rebuild-path-preview"></p>
+          </div>
+          <div class="rebuild-extra-block">
+            <span class="rebuild-section-label">추가로 가져올 노드/가지</span>
+            <div id="rebuildExtraOptions" class="rebuild-extra-options"></div>
+          </div>
+        </div>
+        <div class="rebuild-modal-actions">
+          <button id="rebuildModalCancelBtn" type="button" class="btn btn-ghost">취소</button>
+          <button id="rebuildModalConfirmBtn" type="button" class="btn btn-primary">새 대화 만들기</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script type="module" src="js/main.js?v=20260329-1"></script>

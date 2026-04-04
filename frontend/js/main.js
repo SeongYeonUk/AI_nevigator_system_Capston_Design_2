@@ -26,6 +26,7 @@ const state = {
   graphZoom: 1,
   roomDeleteMode: false,
   selectedRoomIdsForDelete: new Set(),
+  localConversationRooms: [],
   suppressNodeClick: false,
   selectedNodeId: null,
   nodes: [],
@@ -40,6 +41,15 @@ const state = {
   insightCache: new Map(),
   pendingInsightKeys: new Set(),
   insightRequestToken: 0,
+  rebuildModal: {
+    open: false,
+    pathLabel: "",
+    sourceRoomTitle: "",
+    selectedNodeId: null,
+    basePathNodeIds: [],
+    extraOptions: [],
+    selectedExtraBranchIds: new Set()
+  },
   dragState: {
     sourceNodeId: null,
     targetNodeId: null,
@@ -110,11 +120,18 @@ const el = {
 
   selectedNodeTitle: document.getElementById("selectedNodeTitle"),
   selectedNodeMeta: document.getElementById("selectedNodeMeta"),
+  rebuildConversationBtn: document.getElementById("rebuildConversationBtn"),
   deleteSelectedNodeBtn: document.getElementById("deleteSelectedNodeBtn"),
   treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
   driftAlert: document.getElementById("driftAlert"),
   conversationSummaryList: document.getElementById("conversationSummaryList"),
+  rebuildModalBackdrop: document.getElementById("rebuildModalBackdrop"),
+  rebuildModalCloseBtn: document.getElementById("rebuildModalCloseBtn"),
+  rebuildModalCancelBtn: document.getElementById("rebuildModalCancelBtn"),
+  rebuildModalConfirmBtn: document.getElementById("rebuildModalConfirmBtn"),
+  rebuildPathPreview: document.getElementById("rebuildPathPreview"),
+  rebuildExtraOptions: document.getElementById("rebuildExtraOptions"),
 
   treeResizeHandle: document.getElementById("treeResizeHandle"),
   insightResizeHandle: document.getElementById("insightResizeHandle"),
@@ -180,7 +197,16 @@ function bindEvents() {
   el.roomDeleteModeBtn?.addEventListener("click", enterRoomDeleteMode);
   el.roomDeleteApplyBtn?.addEventListener("click", onApplyDeleteSelectedRooms);
   el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
+  el.rebuildConversationBtn?.addEventListener("click", onRebuildConversationFromSelection);
   el.deleteSelectedNodeBtn?.addEventListener("click", onDeleteSelectedNode);
+  el.rebuildModalCloseBtn?.addEventListener("click", closeRebuildModal);
+  el.rebuildModalCancelBtn?.addEventListener("click", closeRebuildModal);
+  el.rebuildModalConfirmBtn?.addEventListener("click", confirmRebuildConversation);
+  el.rebuildModalBackdrop?.addEventListener("click", (event) => {
+    if (event.target === el.rebuildModalBackdrop) {
+      closeRebuildModal();
+    }
+  });
   document.addEventListener("dragover", onDocumentTreeDragOver);
 }
 
@@ -190,11 +216,55 @@ function render() {
   renderTree();
   renderChat();
   renderInsights();
+  renderRebuildModal();
   syncChatInputAvailability();
 }
 
 function cloneNode(node) {
   return { ...node };
+}
+
+function isLocalConversationRoomId(roomId) {
+  return typeof roomId === "string" && roomId.startsWith("local-room:");
+}
+
+function getLocalConversationRoom(roomId = state.currentRoomId) {
+  return state.localConversationRooms.find((room) => room.id === roomId) || null;
+}
+
+function getVisibleConversationRooms() {
+  return [...state.localConversationRooms, ...state.chatRooms];
+}
+
+function isCurrentRoomLocal() {
+  return isLocalConversationRoomId(state.currentRoomId);
+}
+
+function persistCurrentLocalConversationSelection() {
+  if (!isCurrentRoomLocal()) {
+    return;
+  }
+  state.localConversationRooms = state.localConversationRooms.map((room) => (
+    room.id === state.currentRoomId
+      ? { ...room, selectedNodeId: state.selectedNodeId }
+      : room
+  ));
+}
+
+function persistCurrentLocalConversationState() {
+  if (!isCurrentRoomLocal()) {
+    return;
+  }
+  state.localConversationRooms = state.localConversationRooms.map((room) => (
+    room.id === state.currentRoomId
+      ? {
+          ...room,
+          nodes: state.nodes.map(cloneNode),
+          treeNodes: state.treeNodes.map(cloneNode),
+          selectedNodeId: state.selectedNodeId
+        }
+      : room
+  ));
 }
 
 function getTreeSourceNodes() {
@@ -542,13 +612,25 @@ async function bootstrapChatRooms() {
     const visibleRooms = Array.isArray(rooms) ? rooms : [];
     state.chatRooms = visibleRooms.sort((a, b) => Number(b.id) - Number(a.id));
 
-    if (state.chatRooms.length === 0) {
+    if (state.chatRooms.length === 0 && state.localConversationRooms.length === 0) {
       state.currentRoomId = null;
       state.nodes = [];
       state.treeNodes = [];
       state.selectedNodeId = null;
       state.treeBuildStatus = "completed";
       state.treeProcessingWatcherToken++;
+      return;
+    }
+
+    if (isCurrentRoomLocal() && getLocalConversationRoom()) {
+      loadLocalConversationRoom(state.currentRoomId);
+      return;
+    }
+
+    if (state.chatRooms.length === 0 && state.localConversationRooms.length > 0) {
+      clearPendingTreeMutations();
+      state.currentRoomId = state.localConversationRooms[0].id;
+      loadLocalConversationRoom(state.currentRoomId);
       return;
     }
 
@@ -597,11 +679,11 @@ function renderRoomDrawer() {
   }
 
   el.roomList.innerHTML = "";
-  state.chatRooms.forEach((room) => {
+  getVisibleConversationRooms().forEach((room) => {
     const row = document.createElement("div");
     row.className = "room-item-row";
 
-    if (state.roomDeleteMode) {
+    if (state.roomDeleteMode && !room.localOnly) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "room-select-checkbox";
@@ -619,8 +701,8 @@ function renderRoomDrawer() {
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `room-item ${room.id === state.currentRoomId ? "active" : ""}`;
-    btn.innerHTML = `<span class="title">${escapeHtml(room.title || "새 대화")}</span><span class="meta">#${room.id}</span>`;
+    btn.className = `room-item ${room.localOnly ? "local-room" : ""} ${room.id === state.currentRoomId ? "active" : ""}`.trim();
+    btn.innerHTML = `<span class="title">${escapeHtml(room.title || "새 대화")}</span><span class="meta">${room.localOnly ? escapeHtml(room.metaLabel || "재구성 대화") : `#${room.id}`}</span>`;
     btn.addEventListener("click", async () => {
       if (state.roomDeleteMode) {
         return;
@@ -628,7 +710,11 @@ function renderRoomDrawer() {
       clearPendingTreeMutations();
       state.treeProcessingWatcherToken++;
       state.currentRoomId = room.id;
-      await loadRoomHistory(room.id);
+      if (room.localOnly) {
+        loadLocalConversationRoom(room.id);
+      } else {
+        await loadRoomHistory(room.id);
+      }
       toggleRoomDrawer(false);
       render();
     });
@@ -668,9 +754,15 @@ async function onApplyDeleteSelectedRooms() {
 
   if (state.currentRoomId && state.selectedRoomIdsForDelete.has(String(state.currentRoomId))) {
     clearPendingTreeMutations();
-    state.currentRoomId = state.chatRooms.length ? state.chatRooms[0].id : null;
+    state.currentRoomId = state.chatRooms.length
+      ? state.chatRooms[0].id
+      : (state.localConversationRooms.length ? state.localConversationRooms[0].id : null);
     if (state.currentRoomId) {
-      await loadRoomHistory(state.currentRoomId);
+      if (isCurrentRoomLocal()) {
+        loadLocalConversationRoom(state.currentRoomId);
+      } else {
+        await loadRoomHistory(state.currentRoomId);
+      }
     } else {
       state.nodes = [];
       state.treeNodes = [];
@@ -1035,6 +1127,8 @@ async function onSendMessage(event) {
   let tempId = null;
   const previousSelectedNodeId = state.selectedNodeId;
   const previousTreeBuildStatus = state.treeBuildStatus;
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
 
   try {
     if (!state.currentRoomId) {
@@ -1057,12 +1151,18 @@ async function onSendMessage(event) {
       depth: nextDepth,
       timestamp: Date.now()
     });
-    state.treeBuildStatus = "processing";
+    if (!isCurrentRoomLocal()) {
+      state.treeBuildStatus = "processing";
+    }
     state.selectedNodeId = tempId;
+    if (isCurrentRoomLocal()) {
+      state.treeNodes = state.nodes.map(cloneNode);
+      persistCurrentLocalConversationState();
+    }
     render();
 
     const response = await askChatApi({
-      roomId: state.currentRoomId,
+      roomId: effectiveRoomId,
       message: question,
       parentId,
       token: state.currentSession?.accessToken || ""
@@ -1079,6 +1179,16 @@ async function onSendMessage(event) {
       parentId,
       nextDepth
     });
+    if (isCurrentRoomLocal()) {
+      state.treeNodes = state.nodes.map(cloneNode);
+      if (persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
+        state.selectedNodeId = persistedNodeId;
+      }
+      persistCurrentLocalConversationState();
+      render();
+      return;
+    }
+
     const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: true });
     if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
       state.selectedNodeId = persistedNodeId;
@@ -1096,6 +1206,10 @@ async function onSendMessage(event) {
       state.selectedNodeId = previousSelectedNodeId;
     }
     state.treeBuildStatus = previousTreeBuildStatus;
+    if (isCurrentRoomLocal()) {
+      state.treeNodes = state.nodes.map(cloneNode);
+      persistCurrentLocalConversationState();
+    }
     setAuthMessage(`전송 실패: ${toUiError(error)}`, "error");
     render();
   }
@@ -1566,6 +1680,38 @@ function applyTreeMutationLocally(mutation) {
     return false;
   }
 
+  if (isCurrentRoomLocal()) {
+    let localNextNodes = state.nodes.map(cloneNode);
+    if (mutation.type === "delete_subtree") {
+      const ids = collectSubtreeIds(mutation.nodeId, localNextNodes);
+      localNextNodes = localNextNodes.filter((node) => !ids.has(node.id));
+    } else if (mutation.type === "move_subtree") {
+      const sourceNode = localNextNodes.find((node) => node.id === mutation.nodeId);
+      const targetNode = localNextNodes.find((node) => node.id === mutation.newParentId);
+      if (!sourceNode || !targetNode) {
+        return false;
+      }
+      if (!canMoveNodeUnderTarget(mutation.nodeId, mutation.newParentId, localNextNodes)) {
+        return false;
+      }
+      sourceNode.parentId = mutation.newParentId;
+      sourceNode.depth = (Number(targetNode.depth) || 0) + 1;
+      normalizeSubtreeDepths(localNextNodes, sourceNode.id);
+    }
+
+    state.nodes = localNextNodes;
+    state.treeNodes = localNextNodes.map(cloneNode);
+    if (mutation.type === "delete_subtree") {
+      const selectedStillExists = state.selectedNodeId && localNextNodes.some((node) => node.id === state.selectedNodeId);
+      if (!selectedStillExists) {
+        state.selectedNodeId = mutation.fallbackSelectedNodeId || null;
+      }
+    }
+    persistCurrentLocalConversationState();
+    render();
+    return true;
+  }
+
   state.pendingTreeMutations = [...state.pendingTreeMutations, mutation];
   const nextNodes = applyPendingTreeMutationsTo(getTreeSourceNodes());
   state.nodes = nextNodes;
@@ -1890,9 +2036,11 @@ function renderChat() {
     el.chatFeed.appendChild(makeBubble("ai", "질문을 입력하면 첫 노드가 생성됩니다.", Date.now()));
   }
 
-  const room = state.chatRooms.find((r) => r.id === state.currentRoomId);
+  const room = getVisibleConversationRooms().find((r) => r.id === state.currentRoomId);
   const selected = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
-  const roomLabel = room ? `Room: ${room.title}` : "Room: 선택 없음";
+  const roomLabel = room
+    ? (room.localOnly ? `Rebuilt: ${room.title}` : `Room: ${room.title}`)
+    : "Room: 선택 없음";
   if (el.branchTag) {
     el.branchTag.textContent = selected ? `${roomLabel} / ${selected.title}` : roomLabel;
   }
@@ -1910,6 +2058,7 @@ function selectNode(nodeId) {
     return;
   }
   state.selectedNodeId = String(nodeId);
+  persistCurrentLocalConversationSelection();
   render();
 }
 
@@ -1926,10 +2075,12 @@ function isAutoSubtopicSeedNode(node) {
 
 async function renderInsights() {
   const node = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+  const isLocalRoom = isCurrentRoomLocal();
 
   if (!node) {
     if (el.selectedNodeTitle) el.selectedNodeTitle.textContent = "선택 없음";
     if (el.selectedNodeMeta) el.selectedNodeMeta.textContent = "Depth - / Parent -";
+    if (el.rebuildConversationBtn) el.rebuildConversationBtn.disabled = true;
     if (el.deleteSelectedNodeBtn) el.deleteSelectedNodeBtn.disabled = true;
     if (el.treeEditHint) el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
     if (el.depthBar) {
@@ -1950,12 +2101,17 @@ async function renderInsights() {
 
   el.selectedNodeTitle.textContent = node.title || "선택 노드";
   el.selectedNodeMeta.textContent = `Depth ${node.depth} / Parent: ${parentTitle}`;
+  if (el.rebuildConversationBtn) {
+    el.rebuildConversationBtn.disabled = isLocalRoom;
+  }
   if (el.deleteSelectedNodeBtn) {
     el.deleteSelectedNodeBtn.disabled = !canEditTree;
   }
   if (el.treeEditHint) {
     if (!canEditTree) {
       el.treeEditHint.textContent = "트리 구성 중에는 편집할 수 없습니다.";
+    } else if (isLocalRoom) {
+      el.treeEditHint.textContent = "재구성 대화에서도 노드 이동, 삭제, 추가 질문이 가능합니다.";
     } else if (!node.parentId) {
       el.treeEditHint.textContent = "루트 노드는 드래그 이동할 수 없지만 삭제는 가능합니다.";
     } else {
@@ -2011,6 +2167,254 @@ function buildInsightCacheKey(nodeId) {
 function getParentTitleForNode(node) {
   const parentNode = node?.parentId ? getNodeById(node.parentId) : null;
   return parentNode ? parentNode.title : "없음 (최상위)";
+}
+
+function cloneConversationPathNodes(pathNodes) {
+  return pathNodes.map((node, index) => ({
+    ...cloneNode(node),
+    parentId: index === 0 ? null : String(pathNodes[index - 1].id),
+    depth: index
+  }));
+}
+
+function buildConversationPathLabel(pathNodes) {
+  return pathNodes
+    .map((node) => String(node?.title || "").trim())
+    .filter(Boolean)
+    .join(" -> ");
+}
+
+function buildLocalConversationNodes(sourceNodes, includedIds) {
+  const sourceNodeMap = new Map(sourceNodes.map((node) => [String(node.id), node]));
+  const renderableIds = new Set(
+    sourceNodes
+      .filter((node) => includedIds.has(String(node.id)))
+      .map((node) => String(node.id))
+  );
+
+  const resolveParentId = (node) => {
+    let cursorId = node.parentId != null ? String(node.parentId) : null;
+    while (cursorId) {
+      if (renderableIds.has(cursorId)) {
+        return cursorId;
+      }
+      const parentNode = sourceNodeMap.get(cursorId);
+      cursorId = parentNode?.parentId != null ? String(parentNode.parentId) : null;
+    }
+    return null;
+  };
+
+  const included = sourceNodes
+    .filter((node) => renderableIds.has(String(node.id)))
+    .map((node) => ({
+      ...cloneNode(node),
+      parentId: resolveParentId(node)
+    }));
+
+  const childrenByParent = new Map();
+  included.forEach((node) => {
+    const parentId = node.parentId != null ? String(node.parentId) : null;
+    if (!childrenByParent.has(parentId)) {
+      childrenByParent.set(parentId, []);
+    }
+    childrenByParent.get(parentId).push(node);
+  });
+
+  childrenByParent.forEach((nodes) => nodes.sort(compareTreeNodeOrder));
+  const roots = (childrenByParent.get(null) || []).sort(compareTreeNodeOrder);
+
+  const assignDepth = (node, depth) => {
+    node.depth = depth;
+    const children = childrenByParent.get(String(node.id)) || [];
+    children.forEach((child) => assignDepth(child, depth + 1));
+  };
+
+  roots.forEach((root) => assignDepth(root, 0));
+  return included.sort(compareTreeNodeOrder);
+}
+
+function buildRebuildExtraOptions(pathNodes, sourceNodes = state.nodes) {
+  const pathIds = new Set(pathNodes.map((node) => String(node.id)));
+  const extraNodes = sourceNodes
+    .filter((node) => !pathIds.has(String(node.id)))
+    .filter((node) => !isAutoSubtopicSeedNode(node));
+  return extraNodes.map((node) => {
+    const nodePath = getPathToNode(node.id).filter((entry) => !isAutoSubtopicSeedNode(entry));
+    return {
+      id: String(node.id),
+      parentId: node.parentId != null ? String(node.parentId) : null,
+      title: node.title,
+      parentTitle: getParentTitleForNode(node),
+      pathLabel: buildConversationPathLabel(nodePath),
+      depth: node.depth,
+      subtreeSize: collectSubtreeIds(node.id, sourceNodes).size
+    };
+  });
+}
+
+function renderRebuildModal() {
+  if (!el.rebuildModalBackdrop || !el.rebuildPathPreview || !el.rebuildExtraOptions) {
+    return;
+  }
+
+  const modalState = state.rebuildModal;
+  el.rebuildModalBackdrop.classList.toggle("hidden", !modalState.open);
+  if (!modalState.open) {
+    return;
+  }
+
+  el.rebuildPathPreview.textContent = modalState.pathLabel || "-";
+  el.rebuildExtraOptions.innerHTML = "";
+
+  if (!modalState.extraOptions.length) {
+    const empty = document.createElement("div");
+    empty.className = "rebuild-extra-empty";
+    empty.textContent = "이 경로 밖에서 추가로 가져올 노드가 없습니다.";
+    el.rebuildExtraOptions.appendChild(empty);
+    return;
+  }
+
+  const tree = buildTree(modalState.extraOptions);
+  const roots = tree.filter((node) => node.parentId === null || !modalState.extraOptions.some((option) => option.id === node.parentId));
+  const treeWrap = document.createElement("div");
+  treeWrap.className = "rebuild-extra-tree";
+
+  const renderOptionNode = (optionNode) => {
+    const label = document.createElement("label");
+    label.className = "rebuild-extra-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = modalState.selectedExtraBranchIds.has(optionNode.id);
+    checkbox.addEventListener("change", (event) => {
+      if (event.target.checked) {
+        modalState.selectedExtraBranchIds.add(optionNode.id);
+      } else {
+        modalState.selectedExtraBranchIds.delete(optionNode.id);
+      }
+    });
+
+    const content = document.createElement("div");
+    content.innerHTML = `<div class="rebuild-extra-option-title">${escapeHtml(optionNode.title)}</div><div class="rebuild-extra-option-meta">${escapeHtml(optionNode.pathLabel || optionNode.parentTitle)} / 하위 ${Math.max(0, optionNode.subtreeSize - 1)}개 노드 포함</div>`;
+    if (optionNode.subtreeSize <= 1) {
+      content.innerHTML = `<div class="rebuild-extra-option-title">${escapeHtml(optionNode.title)}</div><div class="rebuild-extra-option-meta">${escapeHtml(optionNode.pathLabel || optionNode.parentTitle)} / 단일 노드</div>`;
+    }
+
+    label.appendChild(checkbox);
+    label.appendChild(content);
+    if (optionNode.children?.length) {
+      const childrenWrap = document.createElement("div");
+      childrenWrap.className = "rebuild-extra-children";
+      optionNode.children.forEach((child) => childrenWrap.appendChild(renderOptionNode(child)));
+      const block = document.createElement("div");
+      block.appendChild(label);
+      block.appendChild(childrenWrap);
+      return block;
+    }
+    return label;
+  };
+
+  roots.forEach((root) => treeWrap.appendChild(renderOptionNode(root)));
+  el.rebuildExtraOptions.appendChild(treeWrap);
+}
+
+function closeRebuildModal() {
+  state.rebuildModal = {
+    open: false,
+    pathLabel: "",
+    sourceRoomTitle: "",
+    selectedNodeId: null,
+    basePathNodeIds: [],
+    extraOptions: [],
+    selectedExtraBranchIds: new Set()
+  };
+  render();
+}
+
+function loadLocalConversationRoom(roomId) {
+  const room = getLocalConversationRoom(roomId);
+  if (!room) {
+    return false;
+  }
+  state.currentRoomId = room.id;
+  state.nodes = room.nodes.map(cloneNode);
+  state.treeNodes = room.treeNodes.map(cloneNode);
+  state.selectedNodeId = room.selectedNodeId;
+  state.treeBuildStatus = "completed";
+  state.treeProcessingWatcherToken++;
+  return true;
+}
+
+function onRebuildConversationFromSelection() {
+  if (isCurrentRoomLocal()) {
+    return;
+  }
+  const selectedNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+  if (!selectedNode || !state.currentRoomId) {
+    return;
+  }
+
+  const pathNodes = getPathToNode(selectedNode.id).filter((node) => !isAutoSubtopicSeedNode(node));
+  if (!pathNodes.length) {
+    return;
+  }
+
+  const sourceRoom = state.chatRooms.find((room) => room.id === state.currentRoomId);
+  const pathLabel = buildConversationPathLabel(pathNodes);
+  state.rebuildModal = {
+    open: true,
+    pathLabel: pathLabel || selectedNode.title,
+    sourceRoomTitle: sourceRoom?.title || "원본 대화",
+    selectedNodeId: String(selectedNode.id),
+    basePathNodeIds: pathNodes.map((node) => String(node.id)),
+    extraOptions: buildRebuildExtraOptions(pathNodes, state.nodes),
+    selectedExtraBranchIds: new Set()
+  };
+  render();
+}
+
+function confirmRebuildConversation() {
+  const modalState = state.rebuildModal;
+  if (!modalState.open || !modalState.selectedNodeId || !state.currentRoomId) {
+    return;
+  }
+
+  const selectedNode = getNodeById(modalState.selectedNodeId);
+  if (!selectedNode) {
+    closeRebuildModal();
+    return;
+  }
+
+  const includedIds = new Set(modalState.basePathNodeIds.map(String));
+  modalState.selectedExtraBranchIds.forEach((branchId) => {
+    getPathToNode(branchId).forEach((node) => includedIds.add(String(node.id)));
+    collectSubtreeIds(branchId, state.nodes).forEach((id) => includedIds.add(String(id)));
+  });
+  const clonedNodes = buildLocalConversationNodes(state.nodes, includedIds);
+
+  const sourceRoom = state.chatRooms.find((room) => room.id === state.currentRoomId);
+  const localRoomId = `local-room:${Date.now().toString(36)}`;
+
+  state.localConversationRooms = [
+    {
+      id: localRoomId,
+      title: `재구성: ${selectedNode.title}`,
+      metaLabel: `${sourceRoom?.title || modalState.sourceRoomTitle} / ${selectedNode.title}`,
+      localOnly: true,
+      sourceRoomId: state.currentRoomId,
+      sourceNodeId: selectedNode.id,
+      createdAt: Date.now(),
+      selectedNodeId: String(selectedNode.id),
+      nodes: clonedNodes,
+      treeNodes: clonedNodes.map(cloneNode)
+    },
+    ...state.localConversationRooms
+  ];
+
+  clearPendingTreeMutations();
+  loadLocalConversationRoom(localRoomId);
+  closeRebuildModal();
+  toggleRoomDrawer(true);
 }
 
 function applyInsightPayload(insight, fallbackNode) {
