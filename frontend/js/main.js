@@ -1,8 +1,10 @@
 ﻿import { loginApi, signupApi } from "./api/auth-api.js";
 import {
   askChatApi,
+  createRecommendedChildNodeApi,
   createRoomApi,
   deleteRoomApi,
+  getChildNodeRecommendationsApi,
   getNodeInsightApi,
   getRoomHistoryApi,
   getRoomTreeApi,
@@ -41,6 +43,9 @@ const state = {
   insightCache: new Map(),
   pendingInsightKeys: new Set(),
   insightRequestToken: 0,
+  childRecommendationCache: new Map(),
+  pendingChildRecommendationKeys: new Set(),
+  childRecommendationRequestToken: 0,
   rebuildModal: {
     open: false,
     pathLabel: "",
@@ -126,6 +131,7 @@ const el = {
   depthBar: document.getElementById("depthBar"),
   driftAlert: document.getElementById("driftAlert"),
   conversationSummaryList: document.getElementById("conversationSummaryList"),
+  childNodeRecommendationList: document.getElementById("childNodeRecommendationList"),
   rebuildModalBackdrop: document.getElementById("rebuildModalBackdrop"),
   rebuildModalCloseBtn: document.getElementById("rebuildModalCloseBtn"),
   rebuildModalCancelBtn: document.getElementById("rebuildModalCancelBtn"),
@@ -480,6 +486,15 @@ function clearPendingTreeMutations() {
   clearTreeDragState();
 }
 
+function clearInsightRelatedCaches() {
+  state.insightCache.clear();
+  state.pendingInsightKeys.clear();
+  state.insightRequestToken++;
+  state.childRecommendationCache.clear();
+  state.pendingChildRecommendationKeys.clear();
+  state.childRecommendationRequestToken++;
+}
+
 function switchView(view, authTab) {
   state.currentView = view;
   document.body.classList.toggle("app-active", view === "app");
@@ -645,6 +660,7 @@ async function bootstrapChatRooms() {
     state.nodes = [];
     state.treeNodes = [];
     clearPendingTreeMutations();
+    clearInsightRelatedCaches();
     state.selectedNodeId = null;
     state.treeBuildStatus = "completed";
     state.treeProcessingWatcherToken++;
@@ -1310,6 +1326,7 @@ async function onDeleteAccount(event) {
     state.nodes = [];
     state.treeNodes = [];
     clearPendingTreeMutations();
+    clearInsightRelatedCaches();
     state.selectedNodeId = null;
     state.treeBuildStatus = "completed";
     state.treeProcessingWatcherToken++;
@@ -1328,6 +1345,7 @@ function logout() {
   state.nodes = [];
   state.treeNodes = [];
   clearPendingTreeMutations();
+  clearInsightRelatedCaches();
   state.selectedNodeId = null;
   state.treeBuildStatus = "completed";
   state.treeProcessingWatcherToken++;
@@ -2093,6 +2111,8 @@ async function renderInsights() {
     }
     renderConversationSummaryPlaceholder("선택한 노드의 질문/답변 1쌍을 핵심 어구로 요약합니다.");
     state.insightRequestToken++;
+    renderChildRecommendationPlaceholder("선택 노드의 하위 주제를 추천합니다.");
+    state.childRecommendationRequestToken++;
     return;
   }
 
@@ -2120,6 +2140,7 @@ async function renderInsights() {
   }
 
   applyInsightDepthUi(node.depth);
+  void renderChildNodeRecommendations(node, isLocalRoom);
 
   const cacheKey = buildInsightCacheKey(node.id);
   const cachedInsight = state.insightCache.get(cacheKey);
@@ -2162,6 +2183,281 @@ async function renderInsights() {
 
 function buildInsightCacheKey(nodeId) {
   return `${roomIdSafe(state.currentRoomId)}:${String(nodeId)}`;
+}
+
+function buildChildRecommendationCacheKey(nodeId) {
+  return `child:${roomIdSafe(state.currentRoomId)}:${String(nodeId)}`;
+}
+
+function normalizeRecommendationParentTitle(parentTitle) {
+  let normalized = String(parentTitle || "").replace(/\s+/g, " ").trim();
+  const trailingParentContextPattern = /\s*\([^()]*\)\s*$/;
+  while (trailingParentContextPattern.test(normalized)) {
+    normalized = normalized.replace(trailingParentContextPattern, "").trim();
+  }
+  return normalized || "상위 노드";
+}
+
+function normalizeChildRecommendationItems(items, parentTitle) {
+  const source = Array.isArray(items) ? items : [];
+  const seen = new Set();
+  const normalized = [];
+  const normalizedParentTitle = normalizeRecommendationParentTitle(parentTitle);
+
+  source.forEach((item) => {
+    if (normalized.length >= 3) {
+      return;
+    }
+    const subtopic = String(item || "").replace(/\s+/g, " ").trim();
+    if (!subtopic) {
+      return;
+    }
+    const dedupeKey = subtopic.toLowerCase();
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+    normalized.push({
+      id: `rec_${normalized.length + 1}`,
+      subtopic,
+      displayLabel: `${normalizedParentTitle} - ${subtopic}`,
+      used: false,
+      isCreating: false,
+      createdNodeId: null
+    });
+  });
+
+  return normalized.slice(0, 3);
+}
+
+function renderChildRecommendationPlaceholder(message) {
+  if (!el.childNodeRecommendationList) {
+    return;
+  }
+  const text = String(message || "").trim() || "하위 노드 추천을 준비 중입니다.";
+  el.childNodeRecommendationList.innerHTML = `<p class="child-recommendation-placeholder">${escapeHtml(text)}</p>`;
+}
+
+function renderChildRecommendationButtons(nodeId, cacheEntry) {
+  if (!el.childNodeRecommendationList) {
+    return;
+  }
+
+  const options = Array.isArray(cacheEntry?.options) ? cacheEntry.options : [];
+  if (!options.length) {
+    renderChildRecommendationPlaceholder("추천 가능한 하위 주제가 없습니다.");
+    return;
+  }
+
+  el.childNodeRecommendationList.innerHTML = "";
+  options.forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "child-recommendation-btn";
+    if (option.used) {
+      button.classList.add("used");
+    }
+    if (option.isCreating) {
+      button.classList.add("loading");
+    }
+
+    const disabledByProcessing = state.treeBuildStatus === "processing";
+    button.disabled = Boolean(option.used || option.isCreating || disabledByProcessing);
+    const buttonText = option.displayLabel || option.subtopic || "";
+    button.textContent = option.isCreating ? `${buttonText} (생성 중...)` : buttonText;
+    button.title = buttonText;
+    button.addEventListener("click", () => {
+      void onChildRecommendationClick(nodeId, option.id);
+    });
+    el.childNodeRecommendationList.appendChild(button);
+  });
+}
+
+async function renderChildNodeRecommendations(node, isLocalRoom) {
+  if (!node || !el.childNodeRecommendationList) {
+    return;
+  }
+  if (!state.currentSession?.accessToken) {
+    renderChildRecommendationPlaceholder("로그인 후 하위 노드 추천을 사용할 수 있습니다.");
+    return;
+  }
+
+  const localRoom = isLocalRoom ? getLocalConversationRoom() : null;
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+  if (!effectiveRoomId) {
+    renderChildRecommendationPlaceholder("대화방이 선택되지 않았습니다.");
+    return;
+  }
+
+  const cacheKey = buildChildRecommendationCacheKey(node.id);
+  const cached = state.childRecommendationCache.get(cacheKey);
+  if (cached) {
+    renderChildRecommendationButtons(node.id, cached);
+    return;
+  }
+
+  renderChildRecommendationPlaceholder("하위 노드 후보를 불러오는 중...");
+  if (state.pendingChildRecommendationKeys.has(cacheKey)) {
+    return;
+  }
+
+  const requestToken = ++state.childRecommendationRequestToken;
+  state.pendingChildRecommendationKeys.add(cacheKey);
+
+  try {
+    const payload = await getChildNodeRecommendationsApi(
+      effectiveRoomId,
+      node.id,
+      state.currentSession?.accessToken || ""
+    );
+    const options = normalizeChildRecommendationItems(payload?.recommendations, node.title);
+    const cacheEntry = {
+      nodeId: String(node.id),
+      options
+    };
+    state.childRecommendationCache.set(cacheKey, cacheEntry);
+
+    if (requestToken !== state.childRecommendationRequestToken) {
+      return;
+    }
+
+    const currentNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+    if (!currentNode || String(currentNode.id) !== String(node.id)) {
+      return;
+    }
+
+    renderChildRecommendationButtons(node.id, cacheEntry);
+  } catch (error) {
+    if (requestToken !== state.childRecommendationRequestToken) {
+      return;
+    }
+    renderChildRecommendationPlaceholder("하위 노드 후보를 불러오지 못했습니다.");
+  } finally {
+    state.pendingChildRecommendationKeys.delete(cacheKey);
+  }
+}
+
+async function onChildRecommendationClick(nodeId, optionId) {
+  const cacheKey = buildChildRecommendationCacheKey(nodeId);
+  const cacheEntry = state.childRecommendationCache.get(cacheKey);
+  const option = cacheEntry?.options?.find((item) => item.id === optionId);
+  const parentNode = getNodeById(String(nodeId));
+  if (!cacheEntry || !option || !parentNode) {
+    return;
+  }
+  if (option.used || option.isCreating) {
+    return;
+  }
+  if (state.treeBuildStatus === "processing") {
+    alert("트리 구성 중에는 하위 노드를 생성할 수 없습니다.");
+    return;
+  }
+
+  option.isCreating = true;
+  renderChildRecommendationButtons(nodeId, cacheEntry);
+
+  try {
+    const createdNodeId = await createChildNodeFromRecommendation(parentNode, option.subtopic || option.label);
+    option.used = true;
+    option.createdNodeId = createdNodeId ? String(createdNodeId) : null;
+  } catch (error) {
+    alert(`하위 노드 생성 실패: ${toUiError(error)}`);
+  } finally {
+    option.isCreating = false;
+    const selectedNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+    if (selectedNode && String(selectedNode.id) === String(nodeId)) {
+      renderChildRecommendationButtons(nodeId, cacheEntry);
+    }
+  }
+}
+
+async function createChildNodeFromRecommendation(parentNode, subtopic) {
+  const normalizedSubtopic = String(subtopic || "").replace(/\s+/g, " ").trim();
+  if (!normalizedSubtopic) {
+    throw new Error("하위 노드 주제가 비어 있습니다.");
+  }
+
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+  if (!effectiveRoomId) {
+    throw new Error("대화방이 선택되지 않았습니다.");
+  }
+
+  const parentTitle = normalizeRecommendationParentTitle(parentNode?.title);
+  const question = buildRecommendedChildQuestion(parentTitle, normalizedSubtopic);
+  const nextNodeTitle = buildRecommendedChildTreeTitle(parentTitle, normalizedSubtopic);
+  const parentId = String(parentNode.id);
+  const nextDepth = Number(parentNode.depth || 0) + 1;
+  const tempId = `rec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const previousSelectedNodeId = state.selectedNodeId;
+
+  state.nodes.push({
+    id: tempId,
+    parentId,
+    title: nextNodeTitle,
+    userQuestion: question,
+    aiAnswer: "응답 생성 중...",
+    depth: nextDepth,
+    timestamp: Date.now()
+  });
+  state.selectedNodeId = tempId;
+
+  if (isCurrentRoomLocal()) {
+    state.treeNodes = state.nodes.map(cloneNode);
+    persistCurrentLocalConversationState();
+  }
+  render();
+
+  try {
+    const response = await createRecommendedChildNodeApi({
+      roomId: effectiveRoomId,
+      nodeId: parentId,
+      subtopic: normalizedSubtopic,
+      token: state.currentSession?.accessToken || ""
+    });
+
+    const persistedNodeId = applyAssistantResponseToTempNode({
+      tempId,
+      response,
+      question,
+      parentId,
+      nextDepth
+    });
+
+    if (isCurrentRoomLocal()) {
+      state.treeNodes = state.nodes.map(cloneNode);
+      if (persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
+        state.selectedNodeId = persistedNodeId;
+      }
+      persistCurrentLocalConversationState();
+      render();
+      return persistedNodeId;
+    }
+
+    const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: false });
+    if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
+      state.selectedNodeId = persistedNodeId;
+    }
+    render();
+    return persistedNodeId;
+  } catch (error) {
+    state.nodes = state.nodes.filter((node) => node.id !== tempId);
+    state.selectedNodeId = previousSelectedNodeId;
+    if (isCurrentRoomLocal()) {
+      state.treeNodes = state.nodes.map(cloneNode);
+      persistCurrentLocalConversationState();
+    }
+    render();
+    throw error;
+  }
+}
+
+function buildRecommendedChildQuestion(parentTitle, subtopic) {
+  return `${parentTitle}과 관련하여, ${subtopic}에 대해 알려줘`;
+}
+
+function buildRecommendedChildTreeTitle(parentTitle, subtopic) {
+  return `${subtopic} (${parentTitle})`;
 }
 
 function getParentTitleForNode(node) {

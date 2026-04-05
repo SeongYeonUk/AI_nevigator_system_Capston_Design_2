@@ -44,4 +44,15 @@ public interface ConversationTreeAiService {
             "Schema: {\"summary_items\":[{\"keyword\":\"...\",\"details\":[\"...\",\"...\"]}]}"
     })
     String summarizeSelectedNodeQa(@UserMessage String prompt);
+
+    @SystemMessage({
+            "You recommend direct child topics for one selected parent topic.",
+            "Return concise noun-phrase style Korean topic labels.",
+            "Each topic should be specific enough for exactly one immediate child node.",
+            "Avoid sentence endings, numbering, markdown, and explanations.",
+            "Return JSON only.",
+            "Schema: {\"children\":[\"...\",\"...\",\"...\"]}",
+            "Generate up to 3 items."
+    })
+    String recommendDirectChildren(@UserMessage String prompt);
 }

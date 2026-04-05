@@ -97,3 +97,22 @@ export function getNodeInsightApi(nodeId, token = "") { // 인사이트 API 추�
 export function deleteRoomApi(roomId, token = "") {
   return request(`/api/chat/room/${roomId}`, { method: "DELETE" }, token);
 }
+
+export function getChildNodeRecommendationsApi(roomId, nodeId, token = "") {
+  return request(
+    `/api/chat/room/${roomId}/node/${nodeId}/child-recommendations?t=${Date.now()}`,
+    { method: "GET" },
+    token
+  );
+}
+
+export function createRecommendedChildNodeApi({ roomId, nodeId, subtopic, token = "" }) {
+  return request(
+    `/api/chat/room/${roomId}/node/${nodeId}/recommended-child`,
+    {
+      method: "POST",
+      body: JSON.stringify({ subtopic })
+    },
+    token
+  );
+}

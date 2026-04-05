@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import com.rabbit.domain.chat.dto.MoveNodeRequest;
 
 import java.util.List;
 
@@ -107,6 +106,38 @@ public class ChatController {
             @PathVariable Long nodeId
     ) {
         return chatService.getNodeInsight(nodeId);
+    }
+
+    @GetMapping("/room/{roomId}/node/{nodeId}/child-recommendations")
+    public ChildNodeRecommendationResponse getChildNodeRecommendations(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId,
+            @PathVariable Long nodeId
+    ) {
+        return chatService.getDirectChildRecommendations(authorization, roomId, nodeId);
+    }
+
+    @PostMapping("/room/{roomId}/node/{nodeId}/recommended-child")
+    public ResponseEntity<?> createRecommendedChildNode(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId,
+            @PathVariable Long nodeId,
+            @RequestBody CreateRecommendedChildNodeRequest request
+    ) {
+        try {
+            ChatResponse response = chatService.createRecommendedDirectChild(
+                    authorization,
+                    roomId,
+                    nodeId,
+                    request != null ? request.getSubtopic() : ""
+            );
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("추천 하위 노드 생성 중 오류가 발생했습니다: " + e.getMessage());
+        }
     }
 
 

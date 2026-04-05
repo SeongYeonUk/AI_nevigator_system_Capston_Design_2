@@ -1222,6 +1222,52 @@ body.tree-dragging * {
   word-break: break-word;
 }
 
+.child-recommendation-list {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.child-recommendation-placeholder {
+  font-size: 0.83rem;
+  color: #9ab8cb;
+}
+
+.child-recommendation-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(149, 189, 210, 0.28);
+  border-radius: 11px;
+  padding: 0.58rem 0.62rem;
+  background: rgba(10, 24, 32, 0.58);
+  color: #dff2ff;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.15s ease, background 0.2s ease;
+}
+
+.child-recommendation-btn:hover:not(:disabled) {
+  border-color: rgba(112, 221, 188, 0.78);
+  background: rgba(16, 37, 49, 0.78);
+  transform: translateY(-1px);
+}
+
+.child-recommendation-btn:disabled {
+  cursor: not-allowed;
+}
+
+.child-recommendation-btn.used {
+  border-color: rgba(112, 221, 188, 0.58);
+  background: rgba(27, 78, 86, 0.42);
+  color: #bee9dd;
+}
+
+.child-recommendation-btn.loading {
+  border-color: rgba(247, 209, 106, 0.62);
+  color: #f5dfa2;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;

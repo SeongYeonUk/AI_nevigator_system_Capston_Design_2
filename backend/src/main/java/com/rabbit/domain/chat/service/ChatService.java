@@ -8,6 +8,7 @@ import com.rabbit.domain.chat.Repository.ChatRoomRepository;
 import com.rabbit.domain.chat.dto.ChatHistoryResponse;
 import com.rabbit.domain.chat.dto.ChatResponse;
 import com.rabbit.domain.chat.dto.ChatRoomResponse;
+import com.rabbit.domain.chat.dto.ChildNodeRecommendationResponse;
 import com.rabbit.domain.chat.dto.ConversationSummaryItemResponse;
 import com.rabbit.domain.chat.dto.ConversationTreeNodeResponse;
 import com.rabbit.domain.chat.dto.ConversationTreeResponse;
@@ -51,6 +52,10 @@ public class ChatService {
     private static final Pattern FOLLOW_UP_PATTERN = Pattern.compile(
             "(?i)(더\\s*자세히|자세히|구체적으로|예시|왜|어떻게|차이|비교|심화|추가\\s*설명|more|detail|example|why|compare)"
     );
+
+    private static final Pattern RECOMMENDATION_LINE_SPLIT_PATTERN = Pattern.compile("[,\\n;|]+");
+    private static final Pattern RECOMMENDATION_PREFIX_PATTERN = Pattern.compile("^\\s*[-*\\d.)\\s]+");
+    private static final Pattern TRAILING_PARENT_CONTEXT_PATTERN = Pattern.compile("\\s*\\([^()]*\\)\\s*$");
 
     private static final double ROUTING_CONFIDENCE_SCORE_THRESHOLD = 2.2;
     private static final double ROUTING_CONFIDENCE_MARGIN_THRESHOLD = 1.0;
@@ -191,6 +196,254 @@ public class ChatService {
                 .level2Topic("")
                 .depth(initialDepth)
                 .build();
+    }
+
+    @Transactional(readOnly = true)
+    public ChildNodeRecommendationResponse getDirectChildRecommendations(
+            String authorization,
+            Long roomId,
+            Long nodeId
+    ) {
+        validateAuthorization(authorization);
+
+        ChatMessage parentNode = findRequiredAiNodeInRoom(roomId, nodeId);
+        String topic = normalizeRecommendedParentTopic(resolveInsightTitle(parentNode));
+        String parentQuestion = "";
+        ChatMessage userNode = parentNode.getParent();
+        if (userNode != null && userNode.getSender() == SenderRole.USER) {
+            parentQuestion = stripSystemPrefix(defaultString(userNode.getContent()));
+        }
+
+        List<String> recommendations = recommendDirectChildren(topic, parentQuestion, parentNode.getContent());
+        return ChildNodeRecommendationResponse.builder()
+                .nodeId(parentNode.getId())
+                .recommendations(recommendations)
+                .build();
+    }
+
+    @Transactional
+    public ChatResponse createRecommendedDirectChild(
+            String authorization,
+            Long roomId,
+            Long parentNodeId,
+            String requestedSubtopic
+    ) {
+        validateAuthorization(authorization);
+
+        ChatRoom room = chatRoomRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
+        ChatMessage parentNode = findRequiredAiNodeInRoom(roomId, parentNodeId);
+
+        String parentTopic = normalizeRecommendedParentTopic(resolveInsightTitle(parentNode));
+        String subtopic = normalizeRecommendedSubtopic(requestedSubtopic, parentTopic);
+        String autoQuestion = buildRecommendedChildQuestion(parentTopic, subtopic);
+        int depth = parentNode.getDepth() + 1;
+        String nodeTitle = buildRecommendedChildNodeTitle(parentTopic, subtopic);
+
+        ChatMessage userSaved = chatMessageRepository.save(ChatMessage.builder()
+                .chatRoom(room)
+                .parent(parentNode)
+                .sender(SenderRole.USER)
+                .content(autoQuestion)
+                .nodeTitle(nodeTitle)
+                .depth(depth)
+                .build());
+
+        String aiAnswer = rabbitGuardService.chat(roomId, autoQuestion);
+
+        ChatMessage aiSaved = chatMessageRepository.save(ChatMessage.builder()
+                .chatRoom(room)
+                .parent(userSaved)
+                .sender(SenderRole.AI)
+                .content(aiAnswer)
+                .depth(depth)
+                .build());
+
+        return ChatResponse.builder()
+                .answer(aiAnswer)
+                .newNodeId(aiSaved.getId())
+                .resolvedParentId(parentNode.getId())
+                .nodeTitle(nodeTitle)
+                .level1Topic("")
+                .level2Topic("")
+                .depth(depth)
+                .build();
+    }
+
+    private ChatMessage findRequiredAiNodeInRoom(Long roomId, Long nodeId) {
+        ChatMessage node = chatMessageRepository.findById(nodeId)
+                .orElseThrow(() -> new IllegalArgumentException("Node not found."));
+
+        Long nodeRoomId = node.getChatRoom() != null ? node.getChatRoom().getId() : null;
+        if (!Objects.equals(nodeRoomId, roomId)) {
+            throw new IllegalArgumentException("Node does not belong to the room.");
+        }
+        if (node.getSender() != SenderRole.AI) {
+            throw new IllegalArgumentException("Selected node must be an AI node.");
+        }
+        return node;
+    }
+
+    private List<String> recommendDirectChildren(String parentTopic, String parentQuestion, String parentAnswer) {
+        String normalizedTopic = defaultString(parentTopic);
+        String normalizedQuestion = defaultString(parentQuestion);
+        String answerPreview = trimToLength(defaultString(parentAnswer).replaceAll("\\s+", " "), 220);
+
+        String prompt = """
+                [Task]
+                아래 부모 노드의 바로 한 단계 하위 노드 주제를 최대 3개 추천하세요.
+                각 항목은 짧은 단어구(명사구) 형태로 작성하세요.
+
+                [Rules]
+                1) 즉시 하위 주제로만 작성
+                2) 문장형/설명형 금지
+                3) 중복 금지
+                4) 한국어 우선
+
+                [Parent Topic]
+                %s
+
+                [Parent Question]
+                %s
+
+                [Parent Answer Summary]
+                %s
+
+                JSON only:
+                {"children":["...","...","..."]}
+                """.formatted(normalizedTopic, normalizedQuestion, answerPreview);
+
+        try {
+            String raw = conversationTreeAiService.recommendDirectChildren(prompt);
+            List<String> parsed = parseDirectChildRecommendations(raw);
+            if (!parsed.isEmpty()) {
+                return parsed;
+            }
+        } catch (Exception e) {
+            log.debug("Direct-child recommendation generation failed for topic '{}': {}", normalizedTopic, e.getMessage());
+        }
+
+        return fallbackDirectChildRecommendations(normalizedTopic);
+    }
+
+    private List<String> parseDirectChildRecommendations(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+
+        LinkedHashSet<String> unique = new LinkedHashSet<>();
+        String json = extractFirstJsonObject(raw);
+        if (!json.isBlank()) {
+            try {
+                JsonNode root = new ObjectMapper().readTree(json);
+                JsonNode children = root.path("children");
+                if (children.isArray()) {
+                    for (JsonNode child : children) {
+                        addDirectChildRecommendation(unique, child.asText(""));
+                        if (unique.size() >= 3) {
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Direct-child recommendation JSON parse failed: {}", e.getMessage());
+            }
+        }
+
+        if (unique.isEmpty()) {
+            for (String token : RECOMMENDATION_LINE_SPLIT_PATTERN.split(raw)) {
+                addDirectChildRecommendation(unique, token);
+                if (unique.size() >= 3) {
+                    break;
+                }
+            }
+        }
+
+        return unique.stream().limit(3).toList();
+    }
+
+    private void addDirectChildRecommendation(Set<String> unique, String candidate) {
+        if (unique.size() >= 3) {
+            return;
+        }
+        String normalized = normalizeDirectChildRecommendation(candidate);
+        if (normalized.length() < 2) {
+            return;
+        }
+        unique.add(normalized);
+    }
+
+    private String normalizeDirectChildRecommendation(String value) {
+        String normalized = defaultString(value);
+        normalized = RECOMMENDATION_PREFIX_PATTERN.matcher(normalized).replaceFirst("");
+        normalized = normalized.replace("\"", "").replace("'", "");
+        normalized = normalized.replaceAll("\\s+", " ").trim();
+        normalized = normalized.replaceAll("[.,!?;:]+$", "").trim();
+        if (normalized.length() > 24) {
+            normalized = trimToLength(normalized, 24);
+        }
+        return normalized;
+    }
+
+    private String extractFirstJsonObject(String raw) {
+        int start = raw.indexOf('{');
+        int end = raw.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return "";
+        }
+        return raw.substring(start, end + 1).trim();
+    }
+
+    private List<String> fallbackDirectChildRecommendations(String topic) {
+        String normalizedTopic = normalizeDirectChildRecommendation(topic);
+        if (normalizedTopic.isBlank()) {
+            return List.of("핵심 개념", "동작 원리", "활용 예시");
+        }
+
+        LinkedHashSet<String> fallback = new LinkedHashSet<>();
+        addDirectChildRecommendation(fallback, normalizedTopic + " 핵심 개념");
+        addDirectChildRecommendation(fallback, normalizedTopic + " 동작 원리");
+        addDirectChildRecommendation(fallback, normalizedTopic + " 활용 예시");
+        return fallback.stream().limit(3).toList();
+    }
+
+    private String normalizeRecommendedSubtopic(String requestedSubtopic, String fallbackTopic) {
+        String normalized = normalizeDirectChildRecommendation(requestedSubtopic);
+        if (!normalized.isBlank()) {
+            return normalized;
+        }
+
+        String fallback = normalizeDirectChildRecommendation(fallbackTopic);
+        if (!fallback.isBlank()) {
+            return fallback;
+        }
+        return "하위 주제";
+    }
+
+    private String normalizeRecommendedParentTopic(String parentTopic) {
+        String normalized = normalizeDirectChildRecommendation(parentTopic);
+        normalized = stripTrailingParentContext(normalized);
+        if (!normalized.isBlank()) {
+            return normalized;
+        }
+        return "상위 노드";
+    }
+
+    private String stripTrailingParentContext(String text) {
+        String normalized = defaultString(text);
+        while (TRAILING_PARENT_CONTEXT_PATTERN.matcher(normalized).find()) {
+            normalized = TRAILING_PARENT_CONTEXT_PATTERN.matcher(normalized).replaceFirst("").trim();
+        }
+        return normalized;
+    }
+
+    private String buildRecommendedChildQuestion(String parentTopic, String subtopic) {
+        return parentTopic + "과 관련하여, " + subtopic + "에 대해 알려줘";
+    }
+
+    private String buildRecommendedChildNodeTitle(String parentTopic, String subtopic) {
+        String composed = subtopic + " (" + parentTopic + ")";
+        return trimToLength(composed, 110);
     }
 
     private void triggerTreePostProcessingAsync(
