@@ -116,3 +116,20 @@ export function createRecommendedChildNodeApi({ roomId, nodeId, subtopic, token 
     token
   );
 }
+
+// 특정 노드(와 그 하위 자식들) 삭제 API
+export function deleteNodeApi(roomId, nodeId, token = "") {
+  return request(`/api/chat/room/${roomId}/node/${nodeId}`, { method: "DELETE" }, token);
+}
+
+// 특정 노드의 부모를 변경(이동)하는 API
+export function moveNodeApi(roomId, nodeId, newParentId, token = "") {
+  return request(
+    `/api/chat/room/${roomId}/node/${nodeId}/move`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ newParentId })
+    },
+    token
+  );
+}

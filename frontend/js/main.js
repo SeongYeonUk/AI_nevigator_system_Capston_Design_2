@@ -9,7 +9,9 @@ import {
   getRoomHistoryApi,
   getRoomTreeApi,
   getRoomsApi,
-  updateRoomTitleApi
+  updateRoomTitleApi,
+  deleteNodeApi,  
+  moveNodeApi     
 } from "./api/chat-api.js";
 import { deleteAccountApi, getProfileApi, updateProfileApi } from "./api/user-api.js";
 import { CHAT_API_MODE } from "./config.js";
@@ -1746,7 +1748,7 @@ function applyTreeMutationLocally(mutation) {
   return true;
 }
 
-function onDeleteSelectedNode() {
+async function onDeleteSelectedNode() {
   const selected = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
   if (!selected) {
     return;
@@ -1763,11 +1765,29 @@ function onDeleteSelectedNode() {
   }
 
   const fallbackSelectedNodeId = selected.parentId || null;
+  const targetNodeId = selected.id;
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+
+  // 1. 화면에서 먼저 지웁니다 (Optimistic UI)
   applyTreeMutationLocally({
     type: "delete_subtree",
-    nodeId: selected.id,
+    nodeId: targetNodeId,
     fallbackSelectedNodeId
   });
+
+  // 2. 백엔드에도 지워달라고 비동기로 요청합니다
+  if (!isCurrentRoomLocal()) {
+    try {
+      const token = state.currentSession?.accessToken || "";
+      await deleteNodeApi(effectiveRoomId, targetNodeId, token);
+      console.log(`✅ [백엔드 연동] 노드(${targetNodeId}) 삭제 완료!`);
+    } catch (error) {
+      alert(`서버에서 노드를 삭제하는 중 오류가 발생했습니다: ${toUiError(error)}`);
+      console.error("노드 삭제 실패:", error);
+      // 실패하면 다시 데이터를 불러와서 복구하는 로직을 넣어도 좋습니다.
+    }
+  }
 }
 
 function onTreeNodeDragStart(event, nodeId) {
@@ -2000,7 +2020,7 @@ function attachListDragHandlers(element, nodeId) {
   });
 }
 
-function commitTreeMove(sourceNodeId, targetNodeId) {
+async function commitTreeMove(sourceNodeId, targetNodeId) {
   if (!sourceNodeId || !targetNodeId) {
     clearTreeDragState();
     renderTree();
@@ -2018,13 +2038,30 @@ function commitTreeMove(sourceNodeId, targetNodeId) {
     return;
   }
 
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+
+  // 1. 화면에서 먼저 이사시킵니다 (Optimistic UI)
   applyTreeMutationLocally({
     type: "move_subtree",
     nodeId: String(sourceNodeId),
     newParentId: String(targetNodeId)
   });
+  
   clearTreeDragState();
   renderTree();
+
+  // 2. 백엔드에도 새 집 주소를 알려줍니다
+  if (!isCurrentRoomLocal()) {
+    try {
+      const token = state.currentSession?.accessToken || "";
+      await moveNodeApi(effectiveRoomId, sourceNodeId, targetNodeId, token);
+      console.log(`✅ [백엔드 연동] 노드 이동 완료 (새 부모: ${targetNodeId})`);
+    } catch (error) {
+      alert(`서버에서 노드를 이동하는 중 오류가 발생했습니다: ${toUiError(error)}`);
+      console.error("노드 이동 실패:", error);
+    }
+  }
 }
 
 function renderChat() {

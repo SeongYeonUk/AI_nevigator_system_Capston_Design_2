@@ -159,7 +159,7 @@ function onSignup(event) {
     setAuthMessage("이미 존재하는 아이디입니다.", "error");
     return;
   }
-
+  
   state.users.push({ username, displayName, password });
   saveUsers(state.users);
   setAuthMessage("회원가입이 완료되었습니다. 로그인해 주세요.", "success");
