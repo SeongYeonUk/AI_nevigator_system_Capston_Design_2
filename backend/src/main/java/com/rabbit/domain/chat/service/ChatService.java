@@ -20,6 +20,7 @@ import com.rabbit.domain.user.repository.UserRepository;
 import com.rabbit.global.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -96,6 +97,9 @@ public class ChatService {
     private final ConversationInsightSummaryService conversationInsightSummaryService;
     private final Map<Long, AtomicInteger> roomTreeProcessingCounters = new ConcurrentHashMap<>();
 
+    @Value("${chat.routing.mode:hybrid}")
+    private String routingMode;
+
     @Transactional
     public Long createRoom(String authorization, String title) {
         validateAuthorization(authorization);
@@ -144,6 +148,7 @@ public class ChatService {
 
     @Transactional
     public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage) {
+        long requestStartedAt = System.nanoTime();
         // 1. 권한 및 대화방 검증
         validateAuthorization(authorization);
 
@@ -170,6 +175,7 @@ public class ChatService {
 
         // 🌟 4. [초고속 처리] AI 답변만 즉시 생성!
         String aiAnswer = rabbitGuardService.chat(roomId, userMessage);
+        logLlmTokenEstimate("answer_generation", roomId, userSaved.getId(), userMessage, aiAnswer);
 
         // 5. AI 답변 임시 저장
         ChatMessage aiSaved = chatMessageRepository.save(ChatMessage.builder()
@@ -186,6 +192,8 @@ public class ChatService {
 
         markTreeProcessingStarted(roomId);
         triggerTreePostProcessingAsync(roomId, parentId, userMessage, userSaved.getId(), aiSaved.getId());
+        log.info("[CHAT][REQUEST] roomId={} userNodeId={} requestedParentId={} initialDepth={} elapsedMs={}",
+                roomId, userSaved.getId(), parentId, initialDepth, elapsedMillis(requestStartedAt));
 
         return ChatResponse.builder()
                 .answer(aiAnswer)
@@ -528,6 +536,7 @@ public class ChatService {
         String contextForRouting = userMessage + " (AI 답변 힌트: " + aiHint + ")";
 
         // userMessage 대신 contextForRouting을 넣어줍니다!
+        long routingStartedAt = System.nanoTime();
         ChatMessage parentNode = resolveParentNodeForIntent(historyBeforeCurrent, contextForRouting);
         int currentDepth = (parentNode == null) ? 0 : parentNode.getDepth() + 1;
 
@@ -550,10 +559,22 @@ public class ChatService {
         // applyTreePostProcessing 메서드 안에 임시 로그 추가
         log.info("💡 최종 결정된 부모 ID: {}, 새 노드의 Depth: {}",
                 parentNode != null ? parentNode.getId() : "null", currentDepth);
+        log.info("[ROUTING][{}] roomId={} userNodeId={} requestedParentId={} selectedParentId={} selectedDepth={} elapsedMs={}",
+                routingModeTag(),
+                roomId,
+                userMessageId,
+                requestedParentId,
+                parentNode != null ? parentNode.getId() : null,
+                currentDepth,
+                elapsedMillis(routingStartedAt));
     }
 
     private ChatMessage resolveParentNodeForIntent(List<ChatMessage> history, String userMessage) {
         if (history == null || history.isEmpty()) return null;
+
+        if (isLlmOnlyRoutingMode()) {
+            return resolveParentNodeForIntentWithLlmOnly(history, userMessage);
+        }
 
         ChatMessage lastAiNode = history.stream()
                 .filter(m -> m.getSender() == SenderRole.AI)
@@ -569,7 +590,53 @@ public class ChatService {
         SubtopicAnchor bestAnchor = rankSubtopicAnchors(anchors, history, userMessage, currentAnchor);
 
         if (bestAnchor == null) return lastAiNode;
-        return chooseParentWithinAnchor(bestAnchor, lastAiNode, history, userMessage);
+        ChatMessage resolvedParent = chooseParentWithinAnchor(bestAnchor, lastAiNode, history, userMessage);
+        log.info("[ROUTING][{}][RESULT] anchorCount={} bestAnchor={} selectedParentId={}",
+                routingModeTag(),
+                anchors.size(),
+                bestAnchor.topic(),
+                resolvedParent != null ? resolvedParent.getId() : null);
+        return resolvedParent;
+    }
+
+    private boolean isLlmOnlyRoutingMode() {
+        return "llm_only".equalsIgnoreCase(defaultString(routingMode))
+                || "llm-only".equalsIgnoreCase(defaultString(routingMode));
+    }
+
+    private ChatMessage resolveParentNodeForIntentWithLlmOnly(List<ChatMessage> history, String userMessage) {
+        long llmOnlyStartedAt = System.nanoTime();
+        List<ChatMessage> candidates = history.stream()
+                .filter(message -> message.getSender() == SenderRole.AI)
+                .filter(message -> message.getId() != null)
+                .sorted(Comparator.comparingInt(ChatMessage::getDepth)
+                        .thenComparing(ChatMessage::getCreatedAt)
+                        .thenComparing(ChatMessage::getId))
+                .collect(Collectors.toCollection(ArrayList::new));
+
+        if (candidates.isEmpty()) {
+            return null;
+        }
+
+        ChatMessage llmChoice = resolveBestParentWithLLM(userMessage, candidates);
+        if (llmChoice != null) {
+            log.info("[ROUTING][{}][RESULT] candidateCount={} selectedParentId={} depth={} elapsedMs={}",
+                    routingModeTag(),
+                    candidates.size(),
+                    llmChoice.getId(),
+                    llmChoice.getDepth(),
+                    elapsedMillis(llmOnlyStartedAt));
+            return llmChoice;
+        }
+
+        ChatMessage fallback = candidates.get(candidates.size() - 1);
+        log.info("[ROUTING][{}][RESULT] candidateCount={} selectedParentId={} depth={} fallback=true elapsedMs={}",
+                routingModeTag(),
+                candidates.size(),
+                fallback.getId(),
+                fallback.getDepth(),
+                elapsedMillis(llmOnlyStartedAt));
+        return fallback;
     }
 
     // (헬퍼 메서드 추가) 특정 AI 노드가 속한 앵커 기둥 찾기
@@ -969,6 +1036,7 @@ public class ChatService {
 
     private ChatMessage chooseParentWithinAnchor(
             SubtopicAnchor anchor, ChatMessage requestedParent, List<ChatMessage> history, String userMessage) {
+        long selectionStartedAt = System.nanoTime();
 
         // 🌟 [비용 절감 핵심 로직 복구] 민교님 말씀대로 토큰을 아끼기 위해 정규식 문지기를 부활시킵니다!
         // 단, 오작동을 막기 위해 뒤에 붙은 "(AI 답변 힌트:...)" 부분을 잘라내고 순수 사용자 질문만 검사합니다.
@@ -977,7 +1045,13 @@ public class ChatService {
         // 순수 질문에서 명백한 형제 이동 의도("다음 거", "다른 거")가 보이면 바로 LLM 건너뛰고 처리 (비용 Save 💰)
         if (isSeriesSiblingRequest(requestedParent, pureUserMessage) || hasExplicitSiblingIntent(pureUserMessage)) {
             log.info("⚡ 비용 절감: 정규식 문지기가 명확한 형제 이동(Sibling)을 감지했습니다.");
-            return resolveSiblingParent(requestedParent, anchor.aiNode());
+            ChatMessage siblingParent = resolveSiblingParent(requestedParent, anchor.aiNode());
+            log.info("[ROUTING][{}][FAST_TRACK] anchor={} selectedParentId={} elapsedMs={}",
+                    routingModeTag(),
+                    anchor.topic(),
+                    siblingParent != null ? siblingParent.getId() : null,
+                    elapsedMillis(selectionStartedAt));
+            return siblingParent;
         }
 
         // 정규식으로 판별하기 어려운 복잡한 질문만 똑똑한 하이브리드 엔진(LLM + Vector)으로 넘깁니다.
@@ -985,6 +1059,11 @@ public class ChatService {
 
         if (anchorBestParent != null) {
             log.info("🤖 AI 라우팅 100% 신뢰 적용! 최종 부모: {}", anchorBestParent.getId());
+            log.info("[ROUTING][{}][ANCHOR_PARENT] anchor={} selectedParentId={} elapsedMs={}",
+                    routingModeTag(),
+                    anchor.topic(),
+                    anchorBestParent.getId(),
+                    elapsedMillis(selectionStartedAt));
             return anchorBestParent;
         }
 
@@ -1033,6 +1112,7 @@ public class ChatService {
     //
     private ChatMessage selectRelevantParentWithinAnchor(SubtopicAnchor anchor, List<ChatMessage> history, String userMessage) {
         if (anchor == null || anchor.aiNode() == null) return null;
+        long candidateSelectionStartedAt = System.nanoTime();
 
         List<ChatMessage> candidates = collectAnchorParentCandidates(anchor, history);
         if (candidates.isEmpty()) return anchor.aiNode();
@@ -1077,6 +1157,12 @@ public class ChatService {
                 .collect(Collectors.joining(" -> ")));
 
         ChatMessage llmChoice = resolveBestParentWithLLM(userMessage, finalCandidates);
+        log.info("[ROUTING][{}][CANDIDATES] anchor={} rawCandidateCount={} finalCandidateCount={} elapsedMs={}",
+                routingModeTag(),
+                anchor.topic(),
+                candidates.size(),
+                finalCandidates.size(),
+                elapsedMillis(candidateSelectionStartedAt));
 
         return llmChoice != null ? llmChoice : finalCandidates.get(0);
     }
@@ -1573,6 +1659,7 @@ public class ChatService {
     // 🌟 [범용 AI 기둥 선택기] 하드코딩 꼼수 X, 순수 논리적 추론 O
     private SubtopicAnchor selectAnchorByAi(List<SubtopicAnchor> anchors, List<ChatMessage> history, String userMessage, SubtopicAnchor currentAnchor) {
         if (anchors.isEmpty()) return null;
+        long llmStartedAt = System.nanoTime();
         try {
             StringBuilder options = new StringBuilder();
             for (int i = 0; i < anchors.size(); i++) {
@@ -1609,6 +1696,7 @@ public class ChatService {
                 """, currentContext, userMessage, options.toString());
 
             String rawAnswer = conversationTreeAiService.selectBestSubtopic(prompt);
+            logLlmTokenEstimate("anchor_selection", null, null, prompt, rawAnswer);
 
             int start = rawAnswer.indexOf("{");
             int end = rawAnswer.lastIndexOf("}");
@@ -1621,6 +1709,11 @@ public class ChatService {
                 String reasoning = result.get("reasoning").toString();
 
                 log.info("🎯 GPT 예선전(기둥) 판결: {}번 후보 선택 (이유: {})", chosenIdx + 1, reasoning);
+                log.info("[ROUTING][{}][LLM_ANCHOR] anchorCount={} chosenIndex={} elapsedMs={}",
+                        routingModeTag(),
+                        anchors.size(),
+                        chosenIdx + 1,
+                        elapsedMillis(llmStartedAt));
 
                 if (chosenIdx >= 0 && chosenIdx < anchors.size()) {
                     return anchors.get(chosenIdx);
@@ -2121,6 +2214,37 @@ public class ChatService {
         return text == null ? "" : text.trim();
     }
 
+    private String routingModeTag() {
+        return isLlmOnlyRoutingMode() ? "LLM_ONLY" : "HYBRID";
+    }
+
+    private long elapsedMillis(long startedAtNanos) {
+        return Math.round((System.nanoTime() - startedAtNanos) / 1_000_000.0);
+    }
+
+    private void logLlmTokenEstimate(String callName, Long roomId, Long nodeId, String prompt, String output) {
+        int promptChars = prompt == null ? 0 : prompt.length();
+        int outputChars = output == null ? 0 : output.length();
+        int estimatedPromptTokens = estimateTokens(prompt);
+        int estimatedOutputTokens = estimateTokens(output);
+        log.info("[LLM][TOKEN_ESTIMATE] call={} roomId={} nodeId={} promptChars={} completionChars={} promptTokens~={} completionTokens~={} totalTokens~={}",
+                callName,
+                roomId,
+                nodeId,
+                promptChars,
+                outputChars,
+                estimatedPromptTokens,
+                estimatedOutputTokens,
+                estimatedPromptTokens + estimatedOutputTokens);
+    }
+
+    private int estimateTokens(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        return Math.max(1, (int) Math.ceil(text.length() / 4.0));
+    }
+
     private record SubtopicAnchor(String topic, String hints, ChatMessage aiNode) {
     }
 
@@ -2218,6 +2342,7 @@ public class ChatService {
     private ChatMessage resolveBestParentWithLLM(String userMessage, List<ChatMessage> candidates) {
         if (candidates == null || candidates.isEmpty()) return null;
         if (candidates.size() == 1) return candidates.get(0);
+        long llmStartedAt = System.nanoTime();
 
         try {
             // 🚨 [수정 1] AI 힌트에 GPT가 낚이는 것을 방지하기 위해 괄호 안의 힌트를 제거하고 순수 질문만 추출합니다!
@@ -2295,6 +2420,7 @@ public class ChatService {
             """, deepestTopic, pureTargetQuestion, options.toString()); // 👈 수정: pureTargetQuestion 적용
 
             String rawAnswer = conversationTreeAiService.selectBestSubtopic(prompt);
+            logLlmTokenEstimate("parent_selection", null, null, prompt, rawAnswer);
             int start = rawAnswer.indexOf("{");
             int end = rawAnswer.lastIndexOf("}");
             if (start == -1 || end == -1) return candidates.get(0);
@@ -2341,6 +2467,11 @@ public class ChatService {
 
             if (bestId != null) {
                 Long finalBestId = bestId;
+                log.info("[ROUTING][{}][LLM_PARENT] candidateCount={} selectedParentId={} elapsedMs={}",
+                        routingModeTag(),
+                        candidates.size(),
+                        finalBestId,
+                        elapsedMillis(llmStartedAt));
                 return candidates.stream().filter(c -> c.getId().equals(finalBestId)).findFirst().orElse(candidates.get(0));
             }
         } catch (Exception e) {
