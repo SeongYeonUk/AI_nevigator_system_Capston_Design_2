@@ -5,14 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
 import com.rabbit.domain.chat.Repository.ChatMessageRepository;
 import com.rabbit.domain.chat.Repository.ChatRoomRepository;
-import com.rabbit.domain.chat.dto.ChatHistoryResponse;
-import com.rabbit.domain.chat.dto.ChatResponse;
-import com.rabbit.domain.chat.dto.ChatRoomResponse;
-import com.rabbit.domain.chat.dto.ChildNodeRecommendationResponse;
-import com.rabbit.domain.chat.dto.ConversationSummaryItemResponse;
-import com.rabbit.domain.chat.dto.ConversationTreeNodeResponse;
-import com.rabbit.domain.chat.dto.ConversationTreeResponse;
-import com.rabbit.domain.chat.dto.NodeInsightResponse;
+import com.rabbit.domain.chat.dto.*;
 import com.rabbit.domain.chat.entity.ChatMessage;
 import com.rabbit.domain.chat.entity.ChatRoom;
 import com.rabbit.domain.chat.enums.SenderRole;
@@ -33,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
 
 @Service
 @Slf4j
@@ -2454,4 +2448,136 @@ public class ChatService {
         return false;
     }
 
+    @Transactional
+    public Long rebuildConversation(ConversationRebuildRequest request) {
+        // 1. 새로운 ChatRoom 생성 (재구성된 방)
+        ChatMessage selectedNode = chatMessageRepository.findById(request.getSelectedNodeId())
+                .orElseThrow(() -> new IllegalArgumentException("노드를 찾을 수 없습니다."));
+
+        String nodeName = selectedNode.getNodeTitle();
+        if (nodeName == null || nodeName.trim().isEmpty()) {
+            String content = selectedNode.getContent();
+            if (content != null && content.length() > 10) {
+                nodeName = content.substring(0, 10) + "...";
+            } else {
+                nodeName = content != null ? content : "새 대화";
+            }
+        }
+
+        ChatRoom newRoom = ChatRoom.builder()
+                .title("재구성: " + nodeName)
+                .build();
+        chatRoomRepository.save(newRoom);
+
+        // 2. 포함할 노드 ID 수집 (Set으로 중복 방지)
+        Set<Long> targetIds = new HashSet<>();
+        ChatMessage pathCursor = selectedNode;
+        while (pathCursor != null) {
+            targetIds.add(pathCursor.getId());
+            pathCursor = pathCursor.getParent();
+        }
+
+        for (Long branchId : request.getExtraBranchIds()) {
+            collectSubtreeIds(branchId, targetIds);
+            ChatMessage branchCursor = chatMessageRepository.findById(branchId).orElse(null);
+            while (branchCursor != null) {
+                targetIds.add(branchCursor.getId());
+                branchCursor = branchCursor.getParent();
+            }
+        }
+
+        // 3. 노드 복제 및 새 방에 저장
+        copyNodesToNewRoom(targetIds, newRoom);
+        chatMessageRepository.flush();
+
+        // 🚨 가상 노드 생성 로직은 삭제!
+
+        return newRoom.getId();
+    }
+
+    private void collectSubtreeIds(Long parentId, Set<Long> ids) {
+        ids.add(parentId);
+        List<ChatMessage> children = chatMessageRepository.findByParentId(parentId);
+        for (ChatMessage child : children) {
+            collectSubtreeIds(child.getId(), ids); // 재귀 탐색
+        }
+    }
+    /**
+     * 타겟 ID에 해당하는 노드들을 새로운 방(newRoom)으로 복제하는 내부 메서드
+     */
+    private void copyNodesToNewRoom(Set<Long> targetIds, ChatRoom newRoom) {
+        // 1. 타겟 ID에 해당하는 원본 노드들 모두 DB에서 조회
+        List<ChatMessage> originNodes = chatMessageRepository.findAllById(targetIds);
+
+        // [중요] 원본 노드 ID -> 새로 복제된 노드 객체를 매핑하는 Map
+        // 부모-자식 관계를 새로운 객체들끼리 다시 맺어주기 위해 반드시 필요합니다.
+        Map<Long, ChatMessage> oldIdToNewNodeMap = new HashMap<>();
+
+        // 2. 1차 패스: 노드 정보만 먼저 복제 (부모 객체 연결은 제외)
+        for (ChatMessage origin : originNodes) {
+            // 민교님이 엔티티에 만들어두신 @Builder 활용
+            ChatMessage clonedNode = ChatMessage.builder()
+                    .chatRoom(newRoom) // [핵심] 기존 방이 아니라 새로운 방으로 꽂아줍니다.
+                    .sender(origin.getSender())
+                    .content(origin.getContent())
+                    .nodeTitle(origin.getNodeTitle())
+                    .level1Topic(origin.getLevel1Topic())
+                    .level2Topic(origin.getLevel2Topic())
+                    .topicHints(origin.getTopicHints())
+                    .depth(origin.getDepth()) // 깊이는 복제해도 그대로 유지됩니다.
+                    .build();
+
+            // Map에 원본 ID와 복제본을 저장해 둡니다.
+            oldIdToNewNodeMap.put(origin.getId(), clonedNode);
+        }
+
+        // 3. 2차 패스: 부모-자식 관계를 '복제된 객체들끼리' 다시 연결
+        for (ChatMessage origin : originNodes) {
+            // 원본 노드에 부모가 있고, 그 부모도 이번에 같이 복제되는 대상(targetIds)에 포함되어 있다면
+            if (origin.getParent() != null && oldIdToNewNodeMap.containsKey(origin.getParent().getId())) {
+                ChatMessage clonedNode = oldIdToNewNodeMap.get(origin.getId());
+                ChatMessage clonedParent = oldIdToNewNodeMap.get(origin.getParent().getId());
+
+                // 민교님이 엔티티에 만들어두신 메서드를 아주 유용하게 사용합니다!
+                clonedNode.updateTreePlacement(clonedParent, clonedNode.getDepth());
+            }
+        }
+
+        // 4. 완성된 복제 노드들을 한 번에 DB에 저장 (Insert 쿼리 발생)
+        chatMessageRepository.saveAll(oldIdToNewNodeMap.values());
+    }
+
+
+
+    public String extractKnowledge(ConversationRebuildRequest request) {
+        // 1. 노드 수집
+        ChatMessage selectedNode = chatMessageRepository.findById(request.getSelectedNodeId())
+                .orElseThrow(() -> new IllegalArgumentException("노드를 찾을 수 없습니다."));
+
+        Set<Long> targetIds = new HashSet<>();
+        ChatMessage pathCursor = selectedNode;
+        while (pathCursor != null) {
+            targetIds.add(pathCursor.getId());
+            pathCursor = pathCursor.getParent();
+        }
+        for (Long branchId : request.getExtraBranchIds()) {
+            collectSubtreeIds(branchId, targetIds);
+        }
+
+        // 🚨 이 부분이 지워져서 'messages' 심볼 에러가 났던 겁니다! 다시 추가 완료!
+        List<ChatMessage> messages = chatMessageRepository.findAllById(targetIds);
+        messages.sort(Comparator.comparing(ChatMessage::getCreatedAt));
+
+        // 2. AI에게 읽힐 "원문 텍스트" 조립 (프론트로는 보내지 않고 AI만 읽음)
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("다음은 사용자가 선택한 대화 트리 내용입니다.\n\n");
+        for (ChatMessage msg : messages) {
+            String role = msg.getSender() == SenderRole.USER ? "질문" : "답변";
+            promptBuilder.append(String.format("[%s]: %s\n", role, msg.getContent()));
+        }
+        promptBuilder.append("\n\n위 내용을 바탕으로 핵심 지식을 추출하여 리포트를 작성해줘.");
+
+        // 3. AI API 호출 (텍스트 요약만 받아와서 바로 프론트로 리턴)
+        return rabbitGuardService.chat(request.getSourceRoomId(), promptBuilder.toString());
+    }
 }

@@ -12,6 +12,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
+
 @Configuration
 public class LangChainConfig {
 
@@ -23,6 +25,7 @@ public class LangChainConfig {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .modelName("gpt-4o-mini")
+                .timeout(Duration.ofSeconds(120))
                 .build();
     }
 

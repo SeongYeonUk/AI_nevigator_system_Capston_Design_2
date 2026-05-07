@@ -1,5 +1,6 @@
 package com.rabbit.domain.chat.controller;
 
+import com.rabbit.domain.chat.Repository.ChatMessageRepository;
 import com.rabbit.domain.chat.dto.*;
 import com.rabbit.domain.chat.service.ChatService;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ import java.util.List;
 public class ChatController {
 
     private final ChatService chatService;
+    private final ChatMessageRepository chatMessageRepository;
 
     @GetMapping("/rooms")
     public List<ChatRoomResponse> getRooms(@RequestHeader("Authorization") String authorization) {
@@ -175,4 +177,41 @@ public class ChatController {
                     .body("노드 이동 중 오류가 발생했습니다: " + e.getMessage());
         }
     }
+    // 대화 재구성 API 추가!
+    @PostMapping("/room/rebuild")
+    public ResponseEntity<Long> rebuildRoom(
+            @RequestHeader("Authorization") String authorization,
+            @RequestBody ConversationRebuildRequest request
+    ) {
+        try {
+            // chatService에 인증(authorization) 정보도 넘겨야 한다면 매개변수를 추가해주세요.
+            // 현재 chatService.rebuildConversation(request) 로 구현되어 있으니 그대로 호출합니다.
+            Long newRoomId = chatService.rebuildConversation(request);
+            return ResponseEntity.ok(newRoomId);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+    // 경로 지식 추출 API
+    @PostMapping("/room/extract")
+    public ResponseEntity<String> extractKnowledge( // 리턴 타입을 String으로 변경
+                                                    @RequestHeader("Authorization") String authorization,
+                                                    @RequestBody ConversationRebuildRequest request
+    ) {
+        try {
+            // 1. 여기서 ChatService의 메서드를 호출해서 결과를 받아옵니다.
+            String result = chatService.extractKnowledge(request);
+
+            // 2. 받아온 결과(result)를 응답으로 내려줍니다. (response -> result)
+            return ResponseEntity.ok(result);
+
+        } catch (Exception e) {
+            e.printStackTrace(); // 서버 로그에서 에러 원인을 보기 위해 추가
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("에러 발생: " + e.getMessage());
+        }
+    }
+
+
+
+
 }
