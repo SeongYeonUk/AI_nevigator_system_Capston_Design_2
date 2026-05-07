@@ -13,6 +13,32 @@
   <div class="bg-orb orb-a"></div>
   <div class="bg-orb orb-b"></div>
 
+  <div id="systemToast" class="hidden" style="
+    position: fixed; 
+    top: 90px; 
+    left: 50%; 
+    transform: translateX(-50%); 
+    background: rgba(18, 18, 18, 0.85); 
+    backdrop-filter: blur(12px); 
+    -webkit-backdrop-filter: blur(12px);
+    color: #43dab8; 
+    padding: 12px 24px; 
+    border-radius: 12px; 
+    font-weight: 600; 
+    font-size: 14px;
+    z-index: 10000; 
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 15px rgba(67, 218, 184, 0.15); 
+    border: 1px solid rgba(67, 218, 184, 0.3); 
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    pointer-events: none;
+  ">
+    <span style="font-size: 18px;">✨</span>
+    <span id="systemToastText">심화 학습 모드가 활성화되었습니다.</span>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark">PL</div>
@@ -180,6 +206,7 @@
             <p id="selectedNodeTitle">루트 노드</p>
             <p id="selectedNodeMeta" class="muted">Depth 0 / Parent 없음</p>
             <button id="rebuildConversationBtn" type="button" class="btn btn-ghost btn-sm rebuild-btn">이 경로로 새 대화</button>
+            <button id="extractKnowledgeBtn" type="button" class="btn btn-ghost btn-sm rebuild-btn" style="margin-top: 8px;">이 경로 지식 추출하기</button>
           </div>
 
           <div class="insight-block">
@@ -269,7 +296,38 @@
         </div>
       </div>
     </div>
-  </main>
+
+    <div id="extractResultModalBackdrop" class="modal-backdrop hidden">
+      <div class="modal-card glass rebuild-modal" role="dialog" aria-modal="true" style="width: 850px; max-width: 90vw;">
+        
+        <div class="panel-head">
+          <h3 style="color: #43dab8; margin: 0;">💡 경로 학습 리포트</h3>
+          <button id="extractResultCloseBtn" class="icon-btn" type="button" aria-label="닫기">×</button>
+        </div>
+        
+        <div class="rebuild-modal-body" style="display: flex; flex-direction: column; gap: 24px;">
+          
+          <div id="extractResultContent" style="max-height: 35vh; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; font-size: 15px; padding-right: 12px; color: #e0e0e0;">
+            로딩 중...
+          </div>
+
+          <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px;">
+            <h4 style="color: #43dab8; margin-bottom: 12px; font-size: 14px; opacity: 0.8;">선택된 지식 경로</h4>
+            <div class="rebuild-path-block" style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 16px;">
+               <div id="extractResultPathPreview" class="rebuild-path-preview" style="max-height: 200px; overflow-y: auto;"></div>
+            </div>
+          </div>
+
+        </div>
+        
+        <div class="rebuild-modal-actions">
+          <button id="extractResultCopyBtn" type="button" class="btn btn-ghost">리포트 복사</button>
+          <button id="extractResultConfirmBtn" type="button" class="btn btn-primary">확인</button>
+        </div>
+
+      </div>
+    </div>
+    </main>
 
   <script type="module" src="js/main.js?v=20260329-1"></script>
   <script>
@@ -352,5 +410,3 @@
   </script>
 </body>
 </html>
-
-

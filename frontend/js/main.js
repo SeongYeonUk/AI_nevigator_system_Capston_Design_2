@@ -50,6 +50,7 @@ const state = {
   childRecommendationRequestToken: 0,
   rebuildModal: {
     open: false,
+    mode: "rebuild",
     pathLabel: "",
     sourceRoomTitle: "",
     selectedNodeId: null,
@@ -128,6 +129,7 @@ const el = {
   selectedNodeTitle: document.getElementById("selectedNodeTitle"),
   selectedNodeMeta: document.getElementById("selectedNodeMeta"),
   rebuildConversationBtn: document.getElementById("rebuildConversationBtn"),
+  extractKnowledgeBtn: document.getElementById("extractKnowledgeBtn"),
   deleteSelectedNodeBtn: document.getElementById("deleteSelectedNodeBtn"),
   treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
@@ -205,7 +207,8 @@ function bindEvents() {
   el.roomDeleteModeBtn?.addEventListener("click", enterRoomDeleteMode);
   el.roomDeleteApplyBtn?.addEventListener("click", onApplyDeleteSelectedRooms);
   el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
-  el.rebuildConversationBtn?.addEventListener("click", onRebuildConversationFromSelection);
+  el.rebuildConversationBtn?.addEventListener("click", () => onOpenPathModal("rebuild"));
+  el.extractKnowledgeBtn?.addEventListener("click", () => onOpenPathModal("extract"));
   el.deleteSelectedNodeBtn?.addEventListener("click", onDeleteSelectedNode);
   el.rebuildModalCloseBtn?.addEventListener("click", closeRebuildModal);
   el.rebuildModalCancelBtn?.addEventListener("click", closeRebuildModal);
@@ -2649,6 +2652,18 @@ function renderRebuildModal() {
 
   roots.forEach((root) => treeWrap.appendChild(renderOptionNode(root)));
   el.rebuildExtraOptions.appendChild(treeWrap);
+
+  // 🚨 모달 용도(mode)에 따라 제목과 완료 버튼 글씨 바꾸기
+  const modalTitle = el.rebuildModalBackdrop.querySelector("h3, h2, .modal-title, strong"); // 모달 제목 태그 찾기
+  
+  if (modalState.mode === "extract") {
+    if (modalTitle) modalTitle.textContent = "지식 추출 범위 선택";
+    if (el.rebuildModalConfirmBtn) el.rebuildModalConfirmBtn.textContent = "📝 요약 리포트 추출";
+  } else {
+    if (modalTitle) modalTitle.textContent = "새 대화 재구성";
+    if (el.rebuildModalConfirmBtn) el.rebuildModalConfirmBtn.textContent = "새 대화 만들기";
+  }
+
 }
 
 function closeRebuildModal() {
@@ -2678,24 +2693,20 @@ function loadLocalConversationRoom(roomId) {
   return true;
 }
 
-function onRebuildConversationFromSelection() {
-  if (isCurrentRoomLocal()) {
-    return;
-  }
+function onOpenPathModal(mode) { // 🚨 mode 파라미터 받기
+  if (isCurrentRoomLocal()) return;
   const selectedNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
-  if (!selectedNode || !state.currentRoomId) {
-    return;
-  }
+  if (!selectedNode || !state.currentRoomId) return;
 
   const pathNodes = getPathToNode(selectedNode.id).filter((node) => !isAutoSubtopicSeedNode(node));
-  if (!pathNodes.length) {
-    return;
-  }
+  if (!pathNodes.length) return;
 
   const sourceRoom = state.chatRooms.find((room) => room.id === state.currentRoomId);
   const pathLabel = buildConversationPathLabel(pathNodes);
+  
   state.rebuildModal = {
     open: true,
+    mode: mode, // 🚨 전달받은 모드(rebuild or extract) 저장!
     pathLabel: pathLabel || selectedNode.title,
     sourceRoomTitle: sourceRoom?.title || "원본 대화",
     selectedNodeId: String(selectedNode.id),
@@ -2706,49 +2717,282 @@ function onRebuildConversationFromSelection() {
   render();
 }
 
-function confirmRebuildConversation() {
+// 알림창 띄우는 헬퍼 함수
+function showSystemToast(message) {
+  const toast = document.getElementById("systemToast");
+  const toastText = document.getElementById("systemToastText");
+  if (!toast || !toastText) return;
+
+  toastText.textContent = message; // 텍스트만 교체
+  toast.classList.remove("hidden");
+
+  setTimeout(() => {
+    toast.classList.add("hidden");
+  }, 5000);
+}
+
+async function confirmRebuildConversation() {
   const modalState = state.rebuildModal;
   if (!modalState.open || !modalState.selectedNodeId || !state.currentRoomId) {
     return;
   }
 
-  const selectedNode = getNodeById(modalState.selectedNodeId);
-  if (!selectedNode) {
-    closeRebuildModal();
+  // 1. 백엔드로 보낼 공통 데이터(payload) 생성
+  const payload = {
+    sourceRoomId: Number(state.currentRoomId),
+    selectedNodeId: Number(modalState.selectedNodeId),
+    extraBranchIds: Array.from(modalState.selectedExtraBranchIds).map(Number)
+  };
+
+  // ========================================================
+  // 💡 [지식 추출 모드] 지식 추출 API 호출 후 종료
+  // ========================================================
+  if (modalState.mode === "extract") {
+    executeKnowledgeExtraction(payload);
     return;
   }
 
-  const includedIds = new Set(modalState.basePathNodeIds.map(String));
-  modalState.selectedExtraBranchIds.forEach((branchId) => {
-    getPathToNode(branchId).forEach((node) => includedIds.add(String(node.id)));
-    collectSubtreeIds(branchId, state.nodes).forEach((id) => includedIds.add(String(id)));
-  });
-  const clonedNodes = buildLocalConversationNodes(state.nodes, includedIds);
+  // ========================================================
+  // 🚀 [대화 재구성 모드] 심화 학습을 위한 새 방 만들기
+  // ========================================================
+  try {
+    const response = await fetch('http://localhost:8080/api/chat/room/rebuild', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.currentSession?.accessToken}` 
+      },
+      body: JSON.stringify(payload)
+    });
 
-  const sourceRoom = state.chatRooms.find((room) => room.id === state.currentRoomId);
-  const localRoomId = `local-room:${Date.now().toString(36)}`;
+    if (!response.ok) {
+      throw new Error('대화방 재구성에 실패했습니다.');
+    }
 
-  state.localConversationRooms = [
-    {
-      id: localRoomId,
-      title: `재구성: ${selectedNode.title}`,
-      metaLabel: `${sourceRoom?.title || modalState.sourceRoomTitle} / ${selectedNode.title}`,
-      localOnly: true,
-      sourceRoomId: state.currentRoomId,
-      sourceNodeId: selectedNode.id,
-      createdAt: Date.now(),
-      selectedNodeId: String(selectedNode.id),
-      nodes: clonedNodes,
-      treeNodes: clonedNodes.map(cloneNode)
-    },
-    ...state.localConversationRooms
-  ];
+    const newRoomId = await response.json(); 
+    
+    // UI 초기화 및 방 전환 준비
+    closeRebuildModal();
+    toggleRoomDrawer(false);
+    
+    // 방 목록 갱신 및 현재 방 ID 설정
+    await bootstrapChatRooms(); 
+    state.currentRoomId = newRoomId;
 
-  clearPendingTreeMutations();
-  loadLocalConversationRoom(localRoomId);
-  closeRebuildModal();
-  toggleRoomDrawer(true);
+    // 2. 새 방의 대화 히스토리 로드
+    await loadRoomHistory(newRoomId);
+
+    // 3. 로딩 직후 마지막 노드(심화 학습 기준점)로 포커스 이동
+    if (state.nodes && state.nodes.length > 0) {
+      const lastNode = state.nodes[state.nodes.length - 1];
+      state.selectedNodeId = String(lastNode.id);
+      console.log("심화 학습 포커스 이동 완료! Node ID:", state.selectedNodeId);
+    }
+
+    // 4. 화면 렌더링
+    render(); 
+
+    // 5. 🌟 [핵심 업데이트] 트리 노드 대신 세련된 토스트 알림 띄우기
+    showSystemToast("대화가 재구성 되었습니다. 재구성된 대화를 기반으로 답변이 생성됩니다.");
+
+  } catch (error) {
+    console.error("재구성 API 호출 에러:", error);
+    alert(toUiError(error));
+  }
 }
+
+
+/**
+ * 💡 지식 추출 API 호출 및 다중 경로 미니 그래프 표시 함수
+ */
+/**
+ * 💡 지식 추출 API 호출 및 다중 경로 미니 그래프 표시 함수
+ */
+async function executeKnowledgeExtraction(payload) {
+  const contentArea = document.getElementById("extractResultContent");
+  const pathPreviewArea = document.getElementById("extractResultPathPreview"); 
+  const modalBackdrop = document.getElementById("extractResultModalBackdrop");
+
+  contentArea.textContent = "AI가 리포트를 생성 중입니다... ⏳";
+  pathPreviewArea.innerHTML = ""; 
+  modalBackdrop.classList.remove("hidden");
+  
+  closeRebuildModal();
+
+  // 2. 수집할 노드 ID들을 담을 Set
+  const targetIds = new Set();
+
+  // 🌟 (핵심 헬퍼 함수) 특정 노드에서 루트까지 거슬러 올라가며 ID를 수집합니다.
+  const addPathToRoot = (nodeId) => {
+    let cursor = state.nodes.find(n => String(n.id) === String(nodeId));
+    while (cursor) {
+      targetIds.add(String(cursor.id));
+      cursor = cursor.parentId ? state.nodes.find(n => String(n.id) === String(cursor.parentId)) : null;
+    }
+  };
+
+  // (1) 사용자가 선택한 기본 기준 노드에서 루트까지 수집
+  addPathToRoot(payload.selectedNodeId);
+
+  // (2) '추가로 가져올 노드/가지' 로 선택한 ID 수집
+  if (payload.extraBranchIds && payload.extraBranchIds.length > 0) {
+    payload.extraBranchIds.forEach(branchId => {
+      // 1) 선택한 가지의 하위 노드(자식들) 전부 수집
+      const subIds = collectSubtreeIds(branchId, state.nodes);
+      subIds.forEach(id => targetIds.add(String(id)));
+      
+      // 2) 🌟 빼먹기 쉬운 윗단(부모들)도 루트까지 거슬러 올라가며 꽉꽉 채워 넣기!
+      addPathToRoot(branchId);
+    });
+  }
+
+  // 3. 빠진 것 없이 완벽하게 수집된 ID들로 트리 재조립
+  const nodesToDraw = buildLocalConversationNodes(state.nodes, targetIds);
+
+  // 4. 모달창 미니 그래프 그리기 (drawMiniGraph 함수는 기존 그대로 유지)
+  drawMiniGraph(pathPreviewArea, nodesToDraw);
+
+  try {
+    // 5. 백엔드 통신
+    const response = await fetch('http://localhost:8080/api/chat/room/extract', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.currentSession?.accessToken}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) throw new Error(`요청 실패 (상태: ${response.status})`);
+    const resultText = await response.text();
+    contentArea.innerHTML = resultText.replace(/\n/g, "<br>");
+
+  } catch (error) {
+    console.error("지식 추출 에러:", error);
+    contentArea.textContent = "❌ 오류가 발생했습니다: " + error.message;
+  }
+}
+
+/**
+ * 🌟 [새로 추가] 모달창 안에 쏙 들어가는 전용 미니 트리 렌더링 함수
+ * (이 함수를 executeKnowledgeExtraction 바로 아래에 붙여넣어 주세요)
+ */
+function drawMiniGraph(container, nodesToDraw) {
+  container.innerHTML = "";
+  if (!nodesToDraw || nodesToDraw.length === 0) return;
+
+  // 민교님이 만들어둔 기존 그래프 레이아웃 엔진 완벽 재활용!
+  const graph = getTreeGraphLayout(nodesToDraw);
+  const svgNS = "http://www.w3.org/2000/svg";
+
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "tree-graph-svg");
+  // 트리가 가운데 예쁘게 맞도록 viewBox 설정
+  svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  svg.style.minHeight = "250px"; // 모달창에서 찌그러지지 않게 최소 높이 보장
+
+  // 선(Link) 그리기
+  graph.links.forEach((link) => {
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("x1", String(link.x1));
+    line.setAttribute("y1", String(link.y1));
+    line.setAttribute("x2", String(link.x2));
+    line.setAttribute("y2", String(link.y2));
+    line.setAttribute("class", "tree-link");
+    svg.appendChild(line);
+  });
+
+  // 동그라미 노드 그리기
+  graph.nodes.forEach((node) => {
+    const nodeGroup = document.createElementNS(svgNS, "g");
+    nodeGroup.setAttribute("class", "tree-node-group");
+
+    const circle = document.createElementNS(svgNS, "circle");
+    circle.setAttribute("cx", String(node.x));
+    circle.setAttribute("cy", String(node.y));
+    circle.setAttribute("r", "20");
+    // 💡 포인트: 추출된 경로는 강조되어야 하니 모두 'active' 색상(민트색)을 입혀줍니다!
+    circle.setAttribute("class", "tree-node-circle active"); 
+
+    const label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", String(node.x));
+    label.setAttribute("y", String(node.y + 5));
+    label.setAttribute("class", "tree-node-label");
+    label.textContent = node.title.length > 6 ? `${node.title.slice(0, 6)}...` : node.title;
+    label.style.pointerEvents = "none";
+
+    nodeGroup.appendChild(circle);
+    nodeGroup.appendChild(label);
+    svg.appendChild(nodeGroup);
+  });
+
+  container.appendChild(svg);
+}
+
+/**
+ * 💡 [추가] 모달창 닫기 및 복사 버튼 이벤트 바인딩
+ */
+document.addEventListener('DOMContentLoaded', () => {
+  const extractResultCloseBtn = document.getElementById("extractResultCloseBtn");
+  const extractResultConfirmBtn = document.getElementById("extractResultConfirmBtn");
+  const extractResultCopyBtn = document.getElementById("extractResultCopyBtn");
+  const extractResultModalBackdrop = document.getElementById("extractResultModalBackdrop");
+
+  // 닫기/확인 버튼 동작
+  const closeExtractModal = () => {
+    extractResultModalBackdrop.classList.add("hidden");
+  };
+  
+  if (extractResultCloseBtn) extractResultCloseBtn.addEventListener("click", closeExtractModal);
+  if (extractResultConfirmBtn) extractResultConfirmBtn.addEventListener("click", closeExtractModal);
+
+  // 복사 버튼 동작
+  if (extractResultCopyBtn) {
+    extractResultCopyBtn.addEventListener("click", async () => {
+      const content = document.getElementById("extractResultContent").textContent;
+      try {
+        await navigator.clipboard.writeText(content);
+        alert("리포트가 클립보드에 복사되었습니다!");
+      } catch (err) {
+        alert("복사 실패: " + err);
+      }
+    });
+  }
+});
+
+// 2. 결과창 모달 띄우기 & 닫기 로직
+function showExtractResultModal(summaryText) {
+  const modal = document.getElementById("extractResultModalBackdrop");
+  const content = document.getElementById("extractResultContent");
+  
+  if (modal && content) {
+    content.textContent = summaryText; // 백엔드에서 받은 AI 요약본 넣기
+    modal.classList.remove("hidden");
+  }
+}
+
+function closeExtractResultModal() {
+  document.getElementById("extractResultModalBackdrop")?.classList.add("hidden");
+}
+
+// 3. 결과창 버튼 이벤트 연결 (기존 bindEvents() 함수 안에 넣거나, 파일 맨 아래에서 실행되도록 추가)
+document.getElementById("extractResultCloseBtn")?.addEventListener("click", closeExtractResultModal);
+document.getElementById("extractResultConfirmBtn")?.addEventListener("click", closeExtractResultModal);
+
+document.getElementById("extractResultCopyBtn")?.addEventListener("click", async () => {
+  const content = document.getElementById("extractResultContent")?.textContent;
+  if (!content) return;
+  
+  try {
+    await navigator.clipboard.writeText(content);
+    alert("요약 리포트가 클립보드에 복사되었습니다!");
+  } catch (err) {
+    alert("복사에 실패했습니다.");
+  }
+});
 
 function applyInsightPayload(insight, fallbackNode) {
   const depthFromApi = Number(insight?.depth);
