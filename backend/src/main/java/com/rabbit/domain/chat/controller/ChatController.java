@@ -75,7 +75,9 @@ public class ChatController {
                     authorization,
                     request.getRoomId(),
                     request.getParentId(),
-                    request.getMessage()
+                    request.getMessage(),
+                    request.isForceCreateUnrelated(),
+                    request.isSkipRootTopicGuard()
             );
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
@@ -100,6 +102,19 @@ public class ChatController {
             @PathVariable Long roomId
     ) {
         return chatService.getConversationTree(authorization, roomId);
+    }
+
+    @PostMapping("/room/{roomId}/root-topic-check")
+    public ResponseEntity<?> checkRootTopic(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId,
+            @RequestBody RootTopicCheckRequest request
+    ) {
+        try {
+            return ResponseEntity.ok(chatService.checkRootTopicRelation(authorization, roomId, request));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
+        }
     }
 
     @GetMapping("/node/{nodeId}/insight")

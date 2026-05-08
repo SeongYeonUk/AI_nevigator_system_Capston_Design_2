@@ -14,6 +14,9 @@ public class ChatResponse {
     private String level1Topic;
     private String level2Topic;
     private Integer depth;
+    private boolean rootTopicUnrelated;
+    private String rootTopic;
+    private Double rootTopicSimilarity;
 
     @Builder
     public ChatResponse(
@@ -23,7 +26,10 @@ public class ChatResponse {
             String nodeTitle,
             String level1Topic,
             String level2Topic,
-            Integer depth
+            Integer depth,
+            boolean rootTopicUnrelated,
+            String rootTopic,
+            Double rootTopicSimilarity
     ) {
         this.answer = answer;
         this.newNodeId = newNodeId;
@@ -32,5 +38,8 @@ public class ChatResponse {
         this.level1Topic = level1Topic;
         this.level2Topic = level2Topic;
         this.depth = depth;
+        this.rootTopicUnrelated = rootTopicUnrelated;
+        this.rootTopic = rootTopic;
+        this.rootTopicSimilarity = rootTopicSimilarity;
     }
 }

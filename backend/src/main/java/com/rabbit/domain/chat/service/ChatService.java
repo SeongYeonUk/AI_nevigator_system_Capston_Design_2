@@ -78,6 +78,15 @@ public class ChatService {
             "what", "how", "why", "tell", "about", "please", "more", "detail"
     );
 
+    private static final Set<String> ROOT_TOPIC_CHECK_STOP_WORDS = Set.of(
+            "그리고", "그러면", "그럼", "대한", "대해", "관련", "설명", "알려줘", "알려", "질문",
+            "무엇", "뭐야", "어떻게", "왜", "해줘", "해주세요", "있는", "없는", "이번", "다음",
+            "정리", "예시", "비교", "방법", "차이", "the", "and", "for", "with", "what", "how",
+            "why", "about", "please", "more", "detail"
+    );
+    private static final double ROOT_TOPIC_UNRELATED_THRESHOLD = 0.30;
+    private static final long ROOT_TOPIC_CHECK_CACHE_TTL_MS = 20_000L;
+
     private final RabbitGuardService rabbitGuardService;
     private final ConversationTreeAiService conversationTreeAiService;
     private final ConversationTreePlannerService conversationTreePlannerService;
@@ -89,6 +98,7 @@ public class ChatService {
     private final TransactionTemplate transactionTemplate;
     private final ConversationInsightSummaryService conversationInsightSummaryService;
     private final Map<Long, AtomicInteger> roomTreeProcessingCounters = new ConcurrentHashMap<>();
+    private final Map<String, RootTopicCheckCacheEntry> rootTopicCheckCache = new ConcurrentHashMap<>();
 
     @Transactional
     public Long createRoom(String authorization, String title) {
@@ -136,13 +146,122 @@ public class ChatService {
                 .collect(Collectors.toList());
     }
 
+    @Transactional(readOnly = true)
+    public RootTopicCheckResponse checkRootTopicRelation(
+            String authorization,
+            Long roomId,
+            RootTopicCheckRequest request
+    ) {
+        validateAuthorization(authorization);
+        chatRoomRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
+
+        String question = defaultString(request != null ? request.getMessage() : "");
+        if (question.isBlank()) {
+            return RootTopicCheckResponse.builder()
+                    .unrelated(false)
+                    .rootTopic("")
+                    .similarity(1.0)
+                    .message("")
+                    .build();
+        }
+
+        List<ChatMessage> history = chatMessageRepository.findByChatRoomIdOrderByCreatedAtAsc(roomId);
+        ChatMessage rootUser = history.stream()
+                .filter(message -> message.getSender() == SenderRole.USER)
+                .filter(message -> message.getDepth() == 0)
+                .findFirst()
+                .orElse(null);
+
+        if (rootUser == null) {
+            return RootTopicCheckResponse.builder()
+                    .unrelated(false)
+                    .rootTopic("")
+                    .similarity(1.0)
+                    .message("")
+                    .build();
+        }
+
+        String cacheKey = buildRootTopicCheckCacheKey(roomId, request != null ? request.getParentId() : null, question);
+        RootTopicCheckResponse cached = getCachedRootTopicCheck(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
+        String rootTopic = defaultString(rootUser.getLevel1Topic()).isBlank()
+                ? compactNodeTitle(rootUser)
+                : rootUser.getLevel1Topic().trim();
+
+        List<String> rootContext = buildRootTopicCheckContext(history, rootUser);
+        List<String> parentPathContext = buildParentPathContext(request != null ? request.getParentId() : null);
+        double rootSimilarity = topicRelationshipScore(question, rootContext);
+        double pathSimilarity = topicRelationshipScore(question, parentPathContext);
+        double bestSimilarity = Math.max(rootSimilarity, pathSimilarity);
+        boolean aiUnrelated = classifyRootTopicUnrelated(question, rootTopic, rootContext);
+        boolean unrelated = extractCheckTokens(question).size() >= 1
+                && bestSimilarity < ROOT_TOPIC_UNRELATED_THRESHOLD
+                && aiUnrelated;
+
+        RootTopicCheckResponse response = RootTopicCheckResponse.builder()
+                .unrelated(unrelated)
+                .rootTopic(rootTopic)
+                .similarity(Math.round(bestSimilarity * 1000.0) / 1000.0)
+                .message(unrelated ? "대주제와 관계가 낮은 질문으로 보입니다." : "")
+                .build();
+        rootTopicCheckCache.put(cacheKey, new RootTopicCheckCacheEntry(response, System.currentTimeMillis()));
+        return response;
+    }
+
+    private RootTopicCheckResponse getCachedRootTopicCheck(String cacheKey) {
+        RootTopicCheckCacheEntry entry = rootTopicCheckCache.get(cacheKey);
+        if (entry == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - entry.createdAt() > ROOT_TOPIC_CHECK_CACHE_TTL_MS) {
+            rootTopicCheckCache.remove(cacheKey, entry);
+            return null;
+        }
+        return entry.response();
+    }
+
+    private String buildRootTopicCheckCacheKey(Long roomId, Long parentId, String question) {
+        String normalizedQuestion = defaultString(question)
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        return roomId + "|" + parentId + "|" + normalizedQuestion;
+    }
+
     @Transactional
     public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage) {
+        return ask(authorization, roomId, parentId, userMessage, false, false);
+    }
+
+    @Transactional
+    public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage, boolean forceCreateUnrelated) {
+        return ask(authorization, roomId, parentId, userMessage, forceCreateUnrelated, false);
+    }
+
+    @Transactional
+    public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage, boolean forceCreateUnrelated, boolean skipRootTopicGuard) {
         // 1. 권한 및 대화방 검증
         validateAuthorization(authorization);
 
         ChatRoom room = chatRoomRepository.findById(roomId)
                 .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
+
+        if (parentId != null && !forceCreateUnrelated && !skipRootTopicGuard) {
+            RootTopicCheckResponse rootCheck = checkRootTopicRelation(
+                    authorization,
+                    roomId,
+                    new RootTopicCheckRequest(parentId, userMessage)
+            );
+            if (rootCheck.isUnrelated()) {
+                throw new IllegalArgumentException(
+                        "ROOT_TOPIC_UNRELATED|" + defaultString(rootCheck.getRootTopic()) + "|" + rootCheck.getSimilarity()
+                );
+            }
+        }
 
         // 2. 요청받은 부모 노드 (아직 진짜 부모인지 모름, 임시 위치)
         ChatMessage requestedParent = (parentId != null)
@@ -179,7 +298,16 @@ public class ChatService {
         // =====================================================================
 
         markTreeProcessingStarted(roomId);
-        triggerTreePostProcessingAsync(roomId, parentId, userMessage, userSaved.getId(), aiSaved.getId());
+        triggerTreePostProcessingAsync(
+                authorization,
+                roomId,
+                parentId,
+                userMessage,
+                userSaved.getId(),
+                aiSaved.getId(),
+                forceCreateUnrelated,
+                skipRootTopicGuard
+        );
 
         return ChatResponse.builder()
                 .answer(aiAnswer)
@@ -441,16 +569,28 @@ public class ChatService {
     }
 
     private void triggerTreePostProcessingAsync(
+            String authorization,
             Long roomId,
             Long requestedParentId,
             String userMessage,
             Long userMessageId,
-            Long aiMessageId
+            Long aiMessageId,
+            boolean forceCreateUnrelated,
+            boolean checkRootTopicInBackground
     ) {
         Runnable postProcessTask = () -> CompletableFuture.runAsync(() ->
                 transactionTemplate.executeWithoutResult(status -> {
                     try {
-                        applyTreePostProcessing(roomId, requestedParentId, userMessage, userMessageId, aiMessageId);
+                        boolean keepRequestedParent = forceCreateUnrelated;
+                        if (!keepRequestedParent && checkRootTopicInBackground && requestedParentId != null) {
+                            RootTopicCheckResponse rootCheck = checkRootTopicRelation(
+                                    authorization,
+                                    roomId,
+                                    new RootTopicCheckRequest(requestedParentId, userMessage)
+                            );
+                            keepRequestedParent = rootCheck.isUnrelated();
+                        }
+                        applyTreePostProcessing(roomId, requestedParentId, userMessage, userMessageId, aiMessageId, keepRequestedParent);
                     } catch (Exception e) {
                         log.warn("Tree post-processing failed for room {}: {}", roomId, e.getMessage());
                     } finally {
@@ -498,7 +638,8 @@ public class ChatService {
             Long requestedParentId,
             String userMessage,
             Long userMessageId,
-            Long aiMessageId
+            Long aiMessageId,
+            boolean keepRequestedParent
     ) {
         ChatRoom room = chatRoomRepository.findById(roomId)
                 .orElseThrow(() -> new IllegalArgumentException("Chat room not found."));
@@ -522,14 +663,16 @@ public class ChatService {
         String contextForRouting = userMessage + " (AI 답변 힌트: " + aiHint + ")";
 
         // userMessage 대신 contextForRouting을 넣어줍니다!
-        ChatMessage parentNode = resolveParentNodeForIntent(historyBeforeCurrent, contextForRouting);
+        ChatMessage parentNode = keepRequestedParent
+                ? requestedParent
+                : resolveParentNodeForIntent(historyBeforeCurrent, contextForRouting);
         int currentDepth = (parentNode == null) ? 0 : parentNode.getDepth() + 1;
 
         ConversationTreePlannerService.TreePlan treePlan = conversationTreePlannerService.planNode(
                 historyBeforeCurrent,
                 parentNode,
                 currentDepth,
-                contextForRouting
+                keepRequestedParent ? userMessage : contextForRouting
         );
 
         userSaved.updateTreePlacement(parentNode, currentDepth);
@@ -2052,6 +2195,116 @@ public class ChatService {
         return normalized.substring(0, maxLength - 3).trim() + "...";
     }
 
+    private List<String> buildRootTopicCheckContext(List<ChatMessage> history, ChatMessage rootUser) {
+        List<String> context = new ArrayList<>();
+        addIfNotBlank(context, rootUser.getLevel1Topic());
+        addIfNotBlank(context, rootUser.getNodeTitle());
+        addIfNotBlank(context, stripSystemPrefix(defaultString(rootUser.getContent())));
+
+        history.stream()
+                .filter(message -> message.getSender() == SenderRole.USER)
+                .filter(message -> message.getDepth() <= 1)
+                .limit(12)
+                .forEach(message -> {
+                    addIfNotBlank(context, message.getLevel1Topic());
+                    addIfNotBlank(context, message.getLevel2Topic());
+                    addIfNotBlank(context, message.getNodeTitle());
+                    addIfNotBlank(context, stripSystemPrefix(defaultString(message.getContent())));
+                });
+        return context;
+    }
+
+    private List<String> buildParentPathContext(Long parentId) {
+        if (parentId == null) {
+            return List.of();
+        }
+
+        List<String> context = new ArrayList<>();
+        ChatMessage cursor = chatMessageRepository.findById(parentId).orElse(null);
+        int guard = 0;
+        while (cursor != null && guard++ < 12) {
+            addIfNotBlank(context, cursor.getNodeTitle());
+            addIfNotBlank(context, stripSystemPrefix(defaultString(cursor.getContent())));
+            ChatMessage userNode = cursor.getSender() == SenderRole.AI ? cursor.getParent() : cursor;
+            if (userNode != null) {
+                addIfNotBlank(context, userNode.getNodeTitle());
+                addIfNotBlank(context, userNode.getLevel1Topic());
+                addIfNotBlank(context, userNode.getLevel2Topic());
+                addIfNotBlank(context, stripSystemPrefix(defaultString(userNode.getContent())));
+            }
+            cursor = userNode != null ? userNode.getParent() : null;
+        }
+        return context;
+    }
+
+    private double topicRelationshipScore(String question, List<String> contextSamples) {
+        if (question == null || question.isBlank() || contextSamples == null || contextSamples.isEmpty()) {
+            return 0.0;
+        }
+
+        double semanticScore = contextSimilarityService.relationshipScore(question, contextSamples);
+        double lexicalScore = tokenOverlapRatio(question, String.join(" ", contextSamples));
+        return Math.max(semanticScore, lexicalScore);
+    }
+
+    private boolean classifyRootTopicUnrelated(String question, String rootTopic, List<String> rootContext) {
+        try {
+            String context = rootContext == null ? "" : String.join(" / ", rootContext);
+            String prompt = """
+                    Decide whether the user question belongs to the same broad root topic.
+                    Return exactly one candidate from this list: RELATED, UNRELATED.
+
+                    Root topic: %s
+                    Root context: %s
+                    User question: %s
+
+                    RELATED means the question can reasonably fit inside the root topic.
+                    UNRELATED means it should start a different chat room.
+                    Candidates:
+                    - RELATED
+                    - UNRELATED
+                    """.formatted(
+                    trimToLength(defaultString(rootTopic), 80),
+                    trimToLength(defaultString(context), 600),
+                    trimToLength(defaultString(question), 240)
+            );
+            String result = defaultString(conversationTreeAiService.selectBestSubtopic(prompt));
+            return "UNRELATED".equalsIgnoreCase(result);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private double tokenOverlapRatio(String left, String right) {
+        Set<String> leftTokens = extractCheckTokens(left);
+        Set<String> rightTokens = extractCheckTokens(right);
+        if (leftTokens.isEmpty() || rightTokens.isEmpty()) {
+            return 0.0;
+        }
+
+        int overlap = 0;
+        for (String token : leftTokens) {
+            if (rightTokens.contains(token)) {
+                overlap++;
+            }
+        }
+        return (double) overlap / Math.min(leftTokens.size(), rightTokens.size());
+    }
+
+    private Set<String> extractCheckTokens(String text) {
+        String normalized = defaultString(text).toLowerCase(Locale.ROOT)
+                .replaceAll("[^0-9a-z가-힣]+", " ");
+        Set<String> tokens = new LinkedHashSet<>();
+        for (String token : normalized.split("\\s+")) {
+            String trimmed = token.trim();
+            if (trimmed.length() < 2 || ROOT_TOPIC_CHECK_STOP_WORDS.contains(trimmed)) {
+                continue;
+            }
+            tokens.add(trimmed);
+        }
+        return tokens;
+    }
+
     private void validateAuthorization(String rawToken) {
         String token = stripBearer(rawToken);
         if (!jwtTokenProvider.validateToken(token)) {
@@ -2579,5 +2832,8 @@ public class ChatService {
 
         // 3. AI API 호출 (텍스트 요약만 받아와서 바로 프론트로 리턴)
         return rabbitGuardService.chat(request.getSourceRoomId(), promptBuilder.toString());
+    }
+
+    private record RootTopicCheckCacheEntry(RootTopicCheckResponse response, long createdAt) {
     }
 }

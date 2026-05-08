@@ -1168,13 +1168,102 @@ body.tree-dragging * {
 
 .alert {
   margin-top: 0.55rem;
-  font-size: 0.82rem;
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.32;
   color: #a9d9ef;
+  min-height: 2.35rem;
+  max-height: 4.45rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .alert.warn {
   color: var(--warning);
+}
+
+.alert.route-notice {
+  border: 1px solid rgba(113, 221, 188, 0.46);
+  border-radius: 10px;
+  padding: 0.36rem 0.52rem;
+  background: linear-gradient(135deg, rgba(43, 143, 140, 0.22), rgba(35, 98, 135, 0.2));
+  color: #c9fff0;
+  font-weight: 800;
+  box-shadow: inset 3px 0 0 rgba(67, 218, 184, 0.86);
+}
+
+.alert.route-notice.branch {
+  border-color: rgba(112, 198, 255, 0.55);
+  background: linear-gradient(135deg, rgba(35, 92, 135, 0.28), rgba(43, 143, 140, 0.18));
+  color: #d8f1ff;
+  box-shadow: inset 3px 0 0 rgba(112, 198, 255, 0.92);
+}
+
+.alert.route-notice.depth {
+  border-color: rgba(247, 209, 106, 0.62);
+  background: linear-gradient(135deg, rgba(106, 83, 26, 0.3), rgba(43, 143, 140, 0.14));
+  color: #ffe7a8;
+  box-shadow: inset 3px 0 0 rgba(247, 209, 106, 0.92);
+}
+
+.alert.route-notice.strong {
+  border-color: rgba(255, 151, 139, 0.72);
+  background: linear-gradient(135deg, rgba(107, 50, 55, 0.36), rgba(118, 69, 39, 0.24));
+  color: #ffe2dc;
+  box-shadow: inset 3px 0 0 rgba(255, 120, 114, 0.95), 0 0 0 1px rgba(255, 141, 122, 0.12);
+}
+
+.branch-alert {
+  margin-top: 0.5rem;
+  border: 1px solid rgba(112, 198, 255, 0.55);
+  border-radius: 10px;
+  padding: 0.42rem 0.52rem;
+  background: linear-gradient(135deg, rgba(35, 92, 135, 0.28), rgba(43, 143, 140, 0.16));
+  color: #d8f1ff;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  font-weight: 800;
+  box-shadow: inset 3px 0 0 rgba(112, 198, 255, 0.92);
+}
+
+.route-decision-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(4, 12, 18, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.route-decision-card {
+  width: min(460px, 94vw);
+  border: 1px solid rgba(255, 151, 139, 0.56);
+  border-radius: 16px;
+  padding: 1rem;
+  background: linear-gradient(165deg, rgba(18, 39, 51, 0.98), rgba(38, 24, 30, 0.98));
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
+}
+
+.route-decision-card strong {
+  display: block;
+  color: #ffe2dc;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.route-decision-card p {
+  color: #d9e9f4;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.route-decision-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
 }
 
 .summary-list {

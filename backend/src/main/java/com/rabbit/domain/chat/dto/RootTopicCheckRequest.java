@@ -7,12 +7,7 @@ import lombok.NoArgsConstructor;
 @Getter
 @NoArgsConstructor
 @AllArgsConstructor
-public class ChatRequest {
-    private Long roomId;
+public class RootTopicCheckRequest {
     private Long parentId;
     private String message;
-    private Long activeNodeId;
-    private boolean forceCreateUnrelated;
-    private boolean skipRootTopicGuard;
 }
-

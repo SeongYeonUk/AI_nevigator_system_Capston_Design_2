@@ -1,6 +1,7 @@
 ﻿import { loginApi, signupApi } from "./api/auth-api.js";
 import {
   askChatApi,
+  checkRootTopicApi,
   createRecommendedChildNodeApi,
   createRoomApi,
   deleteRoomApi,
@@ -42,12 +43,20 @@ const state = {
   treeBuildStatus: "completed",
   pendingTreeBuildJobs: 0,
   treeProcessingWatcherToken: 0,
+  routeNotice: null,
+  branchNotice: null,
+  pendingPlacementChecks: new Map(),
   insightCache: new Map(),
   pendingInsightKeys: new Set(),
   insightRequestToken: 0,
   childRecommendationCache: new Map(),
   pendingChildRecommendationKeys: new Set(),
   childRecommendationRequestToken: 0,
+  isSendingMessage: false,
+  chatSubmitStatusLabel: "",
+  suppressRootTopicCheckOnce: false,
+  forceCreateUnrelatedOnce: false,
+  pendingRouteNoticePlan: null,
   rebuildModal: {
     open: false,
     mode: "rebuild",
@@ -134,6 +143,7 @@ const el = {
   treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
   driftAlert: document.getElementById("driftAlert"),
+  branchAlert: document.getElementById("branchAlert"),
   conversationSummaryList: document.getElementById("conversationSummaryList"),
   childNodeRecommendationList: document.getElementById("childNodeRecommendationList"),
   rebuildModalBackdrop: document.getElementById("rebuildModalBackdrop"),
@@ -488,6 +498,9 @@ function getTransparentDragImage() {
 
 function clearPendingTreeMutations() {
   state.pendingTreeMutations = [];
+  clearRouteNotice();
+  clearBranchNotice();
+  state.pendingPlacementChecks.clear();
   clearTreeDragState();
 }
 
@@ -880,6 +893,7 @@ async function waitForTreeProcessingToFinish(roomId, targetNodeId) {
       state.treeNodes = state.nodes;
       if (targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
         state.selectedNodeId = targetNodeId;
+        detectPlacementChangeNotice(targetNodeId);
       }
       render();
       return true;
@@ -889,6 +903,7 @@ async function waitForTreeProcessingToFinish(roomId, targetNodeId) {
   const applied = await loadRoomHistoryWithOptions(roomId, { keepTreeWhileProcessing: false });
   if (applied && targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
     state.selectedNodeId = targetNodeId;
+    detectPlacementChangeNotice(targetNodeId);
   }
   render();
   return applied;
@@ -924,11 +939,12 @@ function startTreeProcessingWatcher(roomId, targetNodeId = null) {
       return;
     }
 
+    state.treeBuildStatus = "completed";
     state.treeNodes = state.nodes;
     if (targetNodeId && state.nodes.some((node) => node.id === targetNodeId)) {
       state.selectedNodeId = targetNodeId;
+      detectPlacementChangeNotice(targetNodeId);
     }
-    state.treeBuildStatus = "completed";
     render();
   };
 
@@ -1126,11 +1142,16 @@ function applyAssistantResponseToTempNode({
   if (state.selectedNodeId === tempId) {
     state.selectedNodeId = persistedId;
   }
+  transferRouteNoticeNodeId(tempId, persistedId);
+  transferBranchNoticeNodeId(tempId, persistedId);
   return persistedId;
 }
 
 async function onSendMessage(event) {
   event.preventDefault();
+  if (state.isSendingMessage) {
+    return;
+  }
 
   if (!state.currentSession?.accessToken) {
     const shouldMoveToLogin = confirm("로그인을 하셔야 합니다. 로그인 창으로 이동하시겠습니까?");
@@ -1149,18 +1170,26 @@ async function onSendMessage(event) {
   const previousSelectedNodeId = state.selectedNodeId;
   const previousTreeBuildStatus = state.treeBuildStatus;
   const localRoom = getLocalConversationRoom();
-  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+  let effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
 
   try {
+    setChatSubmitBusy(true, "답변 생성 중...");
     if (!state.currentRoomId) {
       const roomId = await createRoomWithFallbackTitle();
       state.currentRoomId = roomId;
+      effectiveRoomId = roomId;
       await refreshRoomsOnly();
     }
 
     const parent = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
     const nextDepth = parent ? parent.depth + 1 : 0;
-    const parentId = parent ? parent.id : null;
+    let parentId = parent ? parent.id : null;
+    const forceCreateUnrelated = state.forceCreateUnrelatedOnce;
+    state.forceCreateUnrelatedOnce = false;
+    const activeParent = parentId ? getNodeById(parentId) : null;
+    const effectiveNextDepth = activeParent ? Number(activeParent.depth || 0) + 1 : 0;
+    const pendingNotice = forceCreateUnrelated ? state.pendingRouteNoticePlan : null;
+    state.pendingRouteNoticePlan = null;
     tempId = `n_${Date.now().toString(36)}`;
 
     state.nodes.push({
@@ -1169,9 +1198,23 @@ async function onSendMessage(event) {
       title: summarizeTitle(question),
       userQuestion: question,
       aiAnswer: "응답 생성 중...",
-      depth: nextDepth,
+      depth: effectiveNextDepth,
       timestamp: Date.now()
     });
+    if (pendingNotice?.kind === "branch") {
+      clearRouteNotice();
+      setBranchNotice({
+        nodeId: tempId,
+        message: pendingNotice.message,
+        createdAt: pendingNotice.createdAt
+      });
+    } else if (pendingNotice) {
+      setRouteNotice({ ...pendingNotice, nodeId: tempId });
+      clearBranchNotice();
+    } else {
+      clearRouteNotice();
+      clearBranchNotice();
+    }
     if (!isCurrentRoomLocal()) {
       state.treeBuildStatus = "processing";
     }
@@ -1186,6 +1229,8 @@ async function onSendMessage(event) {
       roomId: effectiveRoomId,
       message: question,
       parentId,
+      forceCreateUnrelated,
+      skipRootTopicGuard: !forceCreateUnrelated,
       token: state.currentSession?.accessToken || ""
     });
 
@@ -1198,8 +1243,16 @@ async function onSendMessage(event) {
       response,
       question,
       parentId,
-      nextDepth
+      nextDepth: effectiveNextDepth
     });
+    schedulePostAnswerRootTopicCheck({
+      roomId: effectiveRoomId,
+      parentId,
+      question,
+      nodeId: persistedNodeId,
+      skip: forceCreateUnrelated
+    });
+    rememberPlacementCheck(persistedNodeId, parentId, question);
     if (isCurrentRoomLocal()) {
       state.treeNodes = state.nodes.map(cloneNode);
       if (persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
@@ -1207,12 +1260,14 @@ async function onSendMessage(event) {
       }
       persistCurrentLocalConversationState();
       render();
+      setChatSubmitBusy(false);
       return;
     }
 
     const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: true });
     if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
       state.selectedNodeId = persistedNodeId;
+      detectPlacementChangeNotice(persistedNodeId);
     }
     render();
     if (state.treeBuildStatus === "processing") {
@@ -1221,6 +1276,7 @@ async function onSendMessage(event) {
       state.treeNodes = state.nodes;
       render();
     }
+    setChatSubmitBusy(false);
   } catch (error) {
     if (tempId) {
       state.nodes = state.nodes.filter((node) => node.id !== tempId);
@@ -1231,8 +1287,52 @@ async function onSendMessage(event) {
       state.treeNodes = state.nodes.map(cloneNode);
       persistCurrentLocalConversationState();
     }
+    const rootReject = parseRootTopicReject(error);
+    if (rootReject) {
+      render();
+      const choice = await openRootTopicDecisionDialog(rootReject);
+      if (choice === "continue") {
+        state.suppressRootTopicCheckOnce = true;
+        state.forceCreateUnrelatedOnce = true;
+        state.pendingRouteNoticePlan = {
+          type: "strong",
+          kind: "topic",
+          message: `대주제 '${rootReject.rootTopic || "현재 대화"}'와 관계가 낮은 노드를 생성했습니다.`,
+          createdAt: Date.now()
+        };
+        if (el.chatInput) {
+          el.chatInput.value = question;
+        }
+        setChatSubmitBusy(false);
+        el.chatForm?.requestSubmit();
+        return;
+      }
+      if (choice === "new_room") {
+        clearRouteNotice();
+        clearBranchNotice();
+        const newRoomId = await createRoomApi(summarizeRoomTitle(question), state.currentSession?.accessToken || "");
+        clearPendingTreeMutations();
+        state.treeProcessingWatcherToken++;
+        state.currentRoomId = Number(newRoomId);
+        state.nodes = [];
+        state.treeNodes = [];
+        state.selectedNodeId = null;
+        await refreshRoomsOnly();
+        if (el.chatInput) {
+          el.chatInput.value = question;
+        }
+        render();
+        setChatSubmitBusy(false);
+        el.chatForm?.requestSubmit();
+        return;
+      }
+      render();
+      setChatSubmitBusy(false);
+      return;
+    }
     setAuthMessage(`전송 실패: ${toUiError(error)}`, "error");
     render();
+    setChatSubmitBusy(false);
   }
 }
 async function refreshRoomsOnly() {
@@ -2147,8 +2247,9 @@ async function renderInsights() {
     }
     if (el.driftAlert) {
       el.driftAlert.textContent = "질문을 입력하면 학습 경로가 시작됩니다.";
-      el.driftAlert.classList.remove("warn");
+      el.driftAlert.className = "alert";
     }
+    renderBranchNotice(null);
     renderConversationSummaryPlaceholder("선택한 노드의 질문/답변 1쌍을 핵심 어구로 요약합니다.");
     state.insightRequestToken++;
     renderChildRecommendationPlaceholder("선택 노드의 하위 주제를 추천합니다.");
@@ -2179,7 +2280,8 @@ async function renderInsights() {
     }
   }
 
-  applyInsightDepthUi(node.depth);
+  applyInsightDepthUi(node.depth, node);
+  renderBranchNotice(node);
   void renderChildNodeRecommendations(node, isLocalRoom);
 
   const cacheKey = buildInsightCacheKey(node.id);
@@ -2428,6 +2530,8 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
   const nextNodeTitle = buildRecommendedChildTreeTitle(parentTitle, normalizedSubtopic);
   const parentId = String(parentNode.id);
   const nextDepth = Number(parentNode.depth || 0) + 1;
+  const isNewBranch = hasVisibleChildNode(parentId);
+  const depthLead = getDepthLeadAgainstOtherLeaves(parentNode, nextDepth);
   const tempId = `rec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const previousSelectedNodeId = state.selectedNodeId;
 
@@ -2440,6 +2544,15 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
     depth: nextDepth,
     timestamp: Date.now()
   });
+  if (isNewBranch || depthLead >= 3) {
+    setRouteNotice({
+      nodeId: tempId,
+      type: "info",
+      kind: depthLead >= 3 ? "depth" : "branch",
+      message: buildDeepBranchNoticeMessage({ depth: nextDepth, isNewBranch, depthLead }),
+      createdAt: Date.now()
+    });
+  }
   state.selectedNodeId = tempId;
 
   if (isCurrentRoomLocal()) {
@@ -2503,6 +2616,604 @@ function buildRecommendedChildTreeTitle(parentTitle, subtopic) {
 function getParentTitleForNode(node) {
   const parentNode = node?.parentId ? getNodeById(node.parentId) : null;
   return parentNode ? parentNode.title : "없음 (최상위)";
+}
+
+function rememberPlacementCheck(nodeId, requestedParentId, question) {
+  if (!nodeId) {
+    return;
+  }
+  state.pendingPlacementChecks.set(String(nodeId), {
+    requestedParentId: requestedParentId != null ? String(requestedParentId) : null,
+    question: String(question || ""),
+    createdAt: Date.now()
+  });
+}
+
+function detectPlacementChangeNotice(nodeId) {
+  const key = String(nodeId || "");
+  const check = state.pendingPlacementChecks.get(key);
+  const node = key ? getNodeById(key) : null;
+  if (!check || !node) {
+    return;
+  }
+  if (isInitialTopicNode(node)) {
+    state.pendingPlacementChecks.delete(key);
+    return;
+  }
+  if (state.treeBuildStatus === "processing") {
+    return;
+  }
+
+  const actualParentId = node.parentId != null ? String(node.parentId) : null;
+  if (actualParentId !== check.requestedParentId) {
+    const actualParent = actualParentId ? getNodeById(actualParentId) : null;
+    clearDepthRouteNoticeForNode(key);
+    setBranchNotice({
+      nodeId: key,
+      message: `질문이 '${actualParent?.title || "다른 경로"}' 분기로 이동했습니다.`,
+      createdAt: Date.now()
+    });
+    state.pendingPlacementChecks.delete(key);
+    return;
+  }
+
+  if (actualParentId && countVisibleChildren(actualParentId) >= 2) {
+    clearDepthRouteNoticeForNode(key);
+    setBranchNotice({
+      nodeId: key,
+      message: "새 분기가 생성되었습니다. 같은 부모 아래 별도 흐름으로 나뉘었습니다.",
+      createdAt: Date.now()
+    });
+    state.pendingPlacementChecks.delete(key);
+    return;
+  }
+
+  const focusMetrics = getRouteFocusMetrics(node);
+  if (focusMetrics.shouldNotify) {
+    clearBranchNotice();
+    setRouteNotice({
+      nodeId: key,
+      type: "info",
+      kind: "depth",
+      message: buildFocusDepthStatusMessage(focusMetrics),
+      createdAt: Date.now()
+    });
+    state.pendingPlacementChecks.delete(key);
+    return;
+  }
+
+  if (Date.now() - Number(check.createdAt || 0) > 60000) {
+    state.pendingPlacementChecks.delete(key);
+  }
+}
+
+function clearDepthRouteNoticeForNode(nodeId) {
+  if (
+    state.routeNotice?.kind === "depth" &&
+    String(state.routeNotice.nodeId) === String(nodeId)
+  ) {
+    clearRouteNotice();
+  }
+}
+
+function countVisibleChildren(parentId) {
+  if (!parentId) {
+    return 0;
+  }
+  return state.nodes.filter((node) => (
+    String(node.parentId || "") === String(parentId) &&
+    !isAutoSubtopicSeedNode(node)
+  )).length;
+}
+
+function setBranchNotice(notice) {
+  if (!notice?.nodeId || !notice?.message) {
+    clearBranchNotice();
+    return;
+  }
+  state.branchNotice = {
+    nodeId: String(notice.nodeId),
+    message: String(notice.message),
+    createdAt: Number(notice.createdAt) || Date.now()
+  };
+}
+
+function clearBranchNotice() {
+  state.branchNotice = null;
+}
+
+function transferBranchNoticeNodeId(fromNodeId, toNodeId) {
+  if (!state.branchNotice || !fromNodeId || !toNodeId) {
+    return;
+  }
+  if (String(state.branchNotice.nodeId) === String(fromNodeId)) {
+    state.branchNotice = {
+      ...state.branchNotice,
+      nodeId: String(toNodeId)
+    };
+  }
+}
+
+function getActiveBranchNotice(node) {
+  if (!node || !state.branchNotice) {
+    return null;
+  }
+  const isSameNode = String(state.branchNotice.nodeId) === String(node.id);
+  const isFresh = Date.now() - Number(state.branchNotice.createdAt || 0) < 60000;
+  return isSameNode && isFresh ? state.branchNotice : null;
+}
+
+function renderBranchNotice(node) {
+  if (!el.branchAlert) {
+    return;
+  }
+  const notice = getActiveBranchNotice(node);
+  el.branchAlert.classList.toggle("hidden", !notice);
+  el.branchAlert.textContent = notice?.message || "";
+}
+
+function schedulePostAnswerRootTopicCheck({ roomId, parentId, question, nodeId, skip = false }) {
+  if (skip || !roomId || !parentId || !question || !nodeId || isCurrentRoomLocal()) {
+    return;
+  }
+  void checkRootTopicApi({
+    roomId,
+    parentId,
+    message: question,
+    token: state.currentSession?.accessToken || ""
+  }).then((result) => {
+    if (!result?.unrelated || !getNodeById(nodeId)) {
+      return;
+    }
+    const rootTopic = result.rootTopic || "현재 대화";
+    setRouteNotice({
+      nodeId,
+      type: "strong",
+      kind: "topic",
+      message: `대주제 '${rootTopic}'와 관계가 낮은 노드가 생성되었습니다.`,
+      createdAt: Date.now()
+    });
+    clearBranchNotice();
+    renderInsights();
+    return openRootTopicDecisionDialog({
+      unrelated: true,
+      rootTopic,
+      similarity: Number(result.similarity) || 0
+    }).then(async (choice) => {
+      if (choice !== "new_room") {
+        return;
+      }
+      try {
+        const currentNode = getNodeById(nodeId);
+        const nextQuestion = currentNode?.userQuestion || question;
+        clearRouteNotice();
+        clearBranchNotice();
+        const newRoomId = await createRoomApi(summarizeRoomTitle(nextQuestion), state.currentSession?.accessToken || "");
+        clearPendingTreeMutations();
+        state.treeProcessingWatcherToken++;
+        state.currentRoomId = Number(newRoomId);
+        state.nodes = [];
+        state.treeNodes = [];
+        state.selectedNodeId = null;
+        await refreshRoomsOnly();
+        if (el.chatInput) {
+          el.chatInput.value = nextQuestion;
+        }
+        render();
+      } catch (error) {
+        setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+        render();
+      }
+    });
+  }).catch((error) => {
+    console.warn("Post-answer root topic check failed:", error);
+  });
+}
+
+function handleDeferredRootTopicNotice(response, nodeId) {
+  if (!response?.rootTopicUnrelated || !nodeId) {
+    return;
+  }
+  const rootTopic = response.rootTopic || "현재 대화";
+  setRouteNotice({
+    nodeId,
+    type: "strong",
+    kind: "topic",
+    message: `대주제 '${rootTopic}'와 관계가 낮은 노드가 생성되었습니다.`,
+    createdAt: Date.now()
+  });
+  clearBranchNotice();
+  void openRootTopicDecisionDialog({
+    unrelated: true,
+    rootTopic,
+    similarity: Number(response.rootTopicSimilarity) || 0
+  }).then(async (choice) => {
+    if (choice !== "new_room") {
+      return;
+    }
+    try {
+      const currentNode = getNodeById(nodeId);
+      const question = currentNode?.userQuestion || "";
+      clearRouteNotice();
+      clearBranchNotice();
+      const newRoomId = await createRoomApi(summarizeRoomTitle(question), state.currentSession?.accessToken || "");
+      clearPendingTreeMutations();
+      state.treeProcessingWatcherToken++;
+      state.currentRoomId = Number(newRoomId);
+      state.nodes = [];
+      state.treeNodes = [];
+      state.selectedNodeId = null;
+      await refreshRoomsOnly();
+      if (el.chatInput) {
+        el.chatInput.value = question;
+      }
+      render();
+    } catch (error) {
+      setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+      render();
+    }
+  });
+}
+
+async function resolveRootTopicDecision({ roomId, parentId, question }) {
+  if (!roomId || !parentId || isCurrentRoomLocal() || state.suppressRootTopicCheckOnce) {
+    state.suppressRootTopicCheckOnce = false;
+    return "continue";
+  }
+
+  try {
+    const result = await checkRootTopicApi({
+      roomId,
+      parentId,
+      message: question,
+      token: state.currentSession?.accessToken || ""
+    });
+    if (!result?.unrelated) {
+      return "continue";
+    }
+    setRouteNotice({
+      nodeId: parentId,
+      type: "strong",
+      kind: "topic",
+      message: `대주제 '${result.rootTopic || "현재 대화"}'와 관계가 낮습니다.`,
+      createdAt: Date.now()
+    });
+    renderInsights();
+    const choice = await openRootTopicDecisionDialog(result);
+    if (choice === "continue") {
+      state.pendingRouteNoticePlan = {
+        type: "strong",
+        kind: "topic",
+        message: `대주제 '${result.rootTopic || "현재 대화"}'와 관계가 낮은 노드를 생성했습니다.`,
+        createdAt: Date.now()
+      };
+    }
+      return choice === "continue" ? "continue_unrelated" : choice;
+  } catch (error) {
+    console.warn("Root topic check failed:", error);
+    return "continue";
+  }
+}
+
+function openRootTopicDecisionDialog(result) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "route-decision-backdrop";
+    const rootTopic = escapeHtml(result?.rootTopic || "현재 대주제");
+    backdrop.innerHTML = `
+      <div class="route-decision-card" role="dialog" aria-modal="true">
+        <strong>대주제와 다른 질문으로 보여요</strong>
+        <p>이 질문은 <b>${rootTopic}</b>와 관계가 낮습니다. 현재 경로에 노드를 만들까요, 새 대화방에서 시작할까요?</p>
+        <div class="route-decision-actions">
+          <button type="button" class="btn btn-ghost" data-choice="continue">원래 노드의 자식으로 생성</button>
+          <button type="button" class="btn btn-primary" data-choice="new_room">새 대화방 만들기</button>
+          <button type="button" class="btn btn-ghost" data-choice="cancel">취소</button>
+        </div>
+      </div>
+    `;
+
+    const finish = (choice) => {
+      backdrop.remove();
+      resolve(choice);
+    };
+
+    backdrop.addEventListener("click", (event) => {
+      const choice = event.target?.dataset?.choice;
+      if (choice) {
+        finish(choice);
+      } else if (event.target === backdrop) {
+        finish("cancel");
+      }
+    });
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("[data-choice='new_room']")?.focus();
+  });
+}
+
+function parseRootTopicReject(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (!message.includes("ROOT_TOPIC_UNRELATED")) {
+    return null;
+  }
+  const parts = message.split("|");
+  return {
+    unrelated: true,
+    rootTopic: parts[1] || "현재 대주제",
+    similarity: Number(parts[2]) || 0,
+    message: "대주제와 관계가 낮은 질문으로 보입니다."
+  };
+}
+
+function setRouteNotice(notice) {
+  if (!notice?.nodeId || !notice?.message) {
+    clearRouteNotice();
+    return;
+  }
+  if (notice.kind === "branch") {
+    setBranchNotice(notice);
+    return;
+  }
+  state.routeNotice = {
+    nodeId: String(notice.nodeId),
+    type: notice.type === "strong" ? "strong" : "info",
+    kind: notice.kind === "depth" ? "depth" : (notice.kind === "branch" ? "branch" : "topic"),
+    message: String(notice.message),
+    createdAt: Number(notice.createdAt) || Date.now()
+  };
+}
+
+function clearRouteNotice() {
+  state.routeNotice = null;
+}
+
+function transferRouteNoticeNodeId(fromNodeId, toNodeId) {
+  if (!state.routeNotice || !fromNodeId || !toNodeId) {
+    return;
+  }
+  if (String(state.routeNotice.nodeId) === String(fromNodeId)) {
+    state.routeNotice = {
+      ...state.routeNotice,
+      nodeId: String(toNodeId)
+    };
+  }
+}
+
+function getActiveRouteNotice(node) {
+  if (!node || !state.routeNotice) {
+    return null;
+  }
+  const isSameNode = String(state.routeNotice.nodeId) === String(node.id);
+  const isFresh = Date.now() - Number(state.routeNotice.createdAt || 0) < 45000;
+  if (!isSameNode || !isFresh) {
+    return null;
+  }
+  if (state.routeNotice.kind === "depth" && !isDepthNoticeStillValidForNode(node)) {
+    return null;
+  }
+  return state.routeNotice;
+}
+
+function isDepthNoticeStillValidForNode(node) {
+  return getRouteFocusMetrics(node).shouldNotify;
+}
+
+function isInitialTopicNode(node) {
+  if (!node) {
+    return true;
+  }
+  if (!node.parentId || Number(node.depth || 0) <= 1) {
+    return true;
+  }
+  return isAutoSubtopicSeedNode(node);
+}
+
+function getDepthLeadForExistingNode(node) {
+  if (!node || isInitialTopicNode(node)) {
+    return 0;
+  }
+  const selectedDepth = Number(node.depth || 0);
+  const pathIds = new Set(getPathToNode(node.id).map((pathNode) => String(pathNode.id)));
+  const deepestOutsideLeafDepth = getDeepestLeafDepthOutsidePath(pathIds);
+  if (deepestOutsideLeafDepth == null) {
+    return 0;
+  }
+  return Math.max(0, selectedDepth - deepestOutsideLeafDepth);
+}
+
+function getRouteFocusMetrics(node) {
+  if (!node || isInitialTopicNode(node)) {
+    return {
+      focusDepth: 0,
+      depthLead: 0,
+      score: 0,
+      shouldNotify: false,
+      branchAnchorTitle: ""
+    };
+  }
+
+  const path = getPathToNode(node.id);
+  const depthLead = getDepthLeadForExistingNode(node);
+  const branchAnchorIndex = findNearestBranchAnchorIndex(path);
+  const focusDepth = Math.max(0, path.length - branchAnchorIndex - 1);
+  const score = Math.max(focusDepth, depthLead);
+
+  return {
+    focusDepth,
+    depthLead,
+    score,
+    shouldNotify: focusDepth >= 4 || (focusDepth >= 3 && depthLead >= 3),
+    branchAnchorTitle: path[branchAnchorIndex]?.title || "현재 주제"
+  };
+}
+
+function findNearestBranchAnchorIndex(path) {
+  if (!Array.isArray(path) || path.length <= 1) {
+    return 0;
+  }
+
+  for (let index = path.length - 2; index >= 0; index -= 1) {
+    if (countAllChildren(path[index].id) >= 2) {
+      return index;
+    }
+  }
+
+  return 0;
+}
+
+function countAllChildren(parentId) {
+  if (!parentId) {
+    return 0;
+  }
+  return state.nodes.filter((node) => String(node.parentId || "") === String(parentId)).length;
+}
+
+function buildRouteNoticeForPendingQuestion({ question, parent, nextDepth, isNewBranch, depthLead, skipRootTopicCheck = false }) {
+  if (!skipRootTopicCheck && isQuestionOutsideRootTopic(question, parent)) {
+    return {
+      type: "strong",
+      kind: "topic",
+      message: "루트 주제와 다른 질문으로 보여요. 새 대화방을 만들어 진행하는 것을 권장합니다.",
+      createdAt: Date.now()
+    };
+  }
+
+  if (isNewBranch || depthLead >= 3) {
+    return {
+      type: "info",
+      kind: depthLead >= 3 ? "depth" : "branch",
+      message: buildDeepBranchNoticeMessage({ depth: nextDepth, isNewBranch, depthLead }),
+      createdAt: Date.now()
+    };
+  }
+
+  return null;
+}
+
+function buildDeepBranchNoticeMessage({ depth, isNewBranch, depthLead }) {
+  if (isNewBranch && depthLead >= 3) {
+    return `새 분기이며 다른 리프보다 ${depthLead}단계 깊습니다. 경로를 나눠 확인하세요.`;
+  }
+  if (isNewBranch) {
+    return `새 분기가 생성되었습니다. Depth ${depth}에서 별도 흐름으로 이어집니다.`;
+  }
+  return `현재 경로가 다른 리프보다 ${depthLead}단계 깊어졌습니다. 흐름을 확인하세요.`;
+}
+
+function hasVisibleChildNode(parentId) {
+  if (!parentId) {
+    return false;
+  }
+  return state.nodes.some((node) => (
+    String(node.parentId || "") === String(parentId) &&
+    !isAutoSubtopicSeedNode(node)
+  ));
+}
+
+function getDepthLeadAgainstOtherLeaves(parent, nextDepth) {
+  if (!parent) {
+    return 0;
+  }
+
+  const currentPathIds = new Set(getPathToNode(parent.id).map((node) => String(node.id)));
+  const deepestOutsideLeafDepth = getDeepestLeafDepthOutsidePath(currentPathIds);
+  if (deepestOutsideLeafDepth == null) {
+    return 0;
+  }
+
+  return nextDepth - deepestOutsideLeafDepth;
+}
+
+function getDeepestLeafDepthOutsidePath(pathIds) {
+  const childCounts = new Map();
+  state.nodes.forEach((node) => {
+    if (node.parentId != null) {
+      const parentId = String(node.parentId);
+      childCounts.set(parentId, (childCounts.get(parentId) || 0) + 1);
+    }
+  });
+
+  let deepest = null;
+  state.nodes.forEach((node) => {
+    const nodeId = String(node.id);
+    if (pathIds.has(nodeId)) {
+      return;
+    }
+    if ((childCounts.get(nodeId) || 0) > 0) {
+      return;
+    }
+    const depth = Number(node.depth);
+    if (!Number.isFinite(depth)) {
+      return;
+    }
+    deepest = deepest == null ? depth : Math.max(deepest, depth);
+  });
+
+  return deepest;
+}
+
+function isQuestionOutsideRootTopic(question, parent) {
+  if (!question || !parent || state.nodes.length < 2) {
+    return false;
+  }
+
+  const root = getRootNodeForNode(parent) || state.nodes.find((node) => !node.parentId);
+  if (!root) {
+    return false;
+  }
+
+  const rootText = [
+    root.title,
+    root.userQuestion,
+    getCurrentRoomTitle()
+  ].filter(Boolean).join(" ");
+  const pathText = getPathToNode(parent.id)
+    .map((node) => `${node.title || ""} ${node.userQuestion || ""}`)
+    .join(" ");
+  const rootSimilarity = textTokenSimilarity(question, rootText);
+  const pathSimilarity = textTokenSimilarity(question, pathText);
+
+  return rootSimilarity < 0.08 && pathSimilarity < 0.08 && extractMeaningfulTokens(question).length >= 2;
+}
+
+function getRootNodeForNode(node) {
+  const path = node?.id ? getPathToNode(node.id) : [];
+  return path.length ? path[0] : null;
+}
+
+function getCurrentRoomTitle() {
+  const room = getVisibleConversationRooms().find((entry) => String(entry.id) === String(state.currentRoomId));
+  return room?.title || "";
+}
+
+function textTokenSimilarity(left, right) {
+  const leftTokens = new Set(extractMeaningfulTokens(left));
+  const rightTokens = new Set(extractMeaningfulTokens(right));
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+  leftTokens.forEach((token) => {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  });
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function extractMeaningfulTokens(text) {
+  const stopwords = new Set([
+    "그리고", "그러면", "그럼", "대한", "대해", "관련", "설명", "알려줘", "알려", "질문",
+    "무엇", "뭐야", "어떻게", "왜", "해줘", "해주세요", "있어", "있는", "없는", "이번",
+    "다음", "정리", "예시", "비교", "방법", "차이", "the", "and", "for", "with", "what",
+    "how", "why", "about", "please"
+  ]);
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣]+/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !stopwords.has(token));
 }
 
 function cloneConversationPathNodes(pathNodes) {
@@ -3006,36 +3717,57 @@ function applyInsightPayload(insight, fallbackNode) {
     el.selectedNodeMeta.textContent = `Depth ${depth} / Parent: ${getParentTitleForNode(fallbackNode)}`;
   }
 
-  applyInsightDepthUi(depth);
+  applyInsightDepthUi(depth, fallbackNode);
   renderConversationSummary(insight?.conversationSummary);
 }
 
-function applyInsightDepthUi(depthValue) {
-  const depth = Number(depthValue) || 0;
-  const ratio = Math.min(100, Math.round((depth / 7) * 100));
+function applyInsightDepthUi(depthValue, node = null) {
+  const notice = getActiveRouteNotice(node);
+  const focusMetrics = getRouteFocusMetrics(node);
+  const ratio = Math.min(100, Math.max(10, Math.round((focusMetrics.score / 3) * 100)));
+  const isDepthOverLimit = focusMetrics.shouldNotify;
+  const depthNotice = notice?.kind === "depth" || notice?.kind === "topic" ? notice : null;
 
   if (el.depthBar) {
-    el.depthBar.style.width = `${Math.max(10, ratio)}%`;
+    el.depthBar.style.width = `${ratio}%`;
+    el.depthBar.style.background = isDepthOverLimit
+      ? "linear-gradient(90deg, #f7d16a, #ff8d7a)"
+      : "linear-gradient(90deg, #43dab8, #62b4d8)";
   }
 
-  if (depth >= 5) {
-    if (el.depthBar) {
-      el.depthBar.style.background = "linear-gradient(90deg, #f7d16a, #ff8d7a)";
+  if (depthNotice) {
+    if (depthNotice.type === "strong" && el.depthBar) {
+      el.depthBar.style.background = "linear-gradient(90deg, #ffb36a, #ff6f91)";
     }
     if (el.driftAlert) {
-      el.driftAlert.textContent = "주의: 경로 깊이가 높습니다. 목표와의 정합성을 다시 확인하세요.";
-      el.driftAlert.classList.add("warn");
+      el.driftAlert.textContent = depthNotice.message;
+      el.driftAlert.className = `alert route-notice ${depthNotice.type === "strong" ? "strong" : "info"} ${depthNotice.kind || ""}`.trim();
     }
     return;
   }
 
-  if (el.depthBar) {
-    el.depthBar.style.background = "linear-gradient(90deg, #43dab8, #62b4d8)";
+  if (isDepthOverLimit) {
+    if (el.driftAlert) {
+      el.driftAlert.textContent = buildFocusDepthStatusMessage(focusMetrics);
+      el.driftAlert.className = "alert route-notice info depth";
+    }
+    return;
   }
+
   if (el.driftAlert) {
-    el.driftAlert.textContent = "정상 범위: 학습 경로가 안정적으로 유지되고 있습니다.";
-    el.driftAlert.classList.remove("warn");
+    el.driftAlert.textContent = focusMetrics.focusDepth > 0
+      ? `연속 심화 ${focusMetrics.focusDepth}단계: 정상 범위 안에서 유지되고 있습니다.`
+      : "연속 심화 0단계: 학습 경로가 균형 있게 유지되고 있습니다.";
+    el.driftAlert.className = "alert";
   }
+}
+
+function buildFocusDepthStatusMessage(metrics) {
+  const topic = metrics.branchAnchorTitle || "현재 주제";
+  const leadText = metrics.depthLead >= 3
+    ? ` 다른 리프보다 ${metrics.depthLead}단계 깊습니다.`
+    : "";
+  return `'${topic}' 흐름에서 ${metrics.focusDepth}단계 연속 심화 중입니다.${leadText} 다른 하위 개념도 함께 확인해보세요.`;
 }
 
 function renderConversationSummary(items) {
@@ -3210,17 +3942,17 @@ function isAutoGeneratedRoomTitle(title) {
 }
 
 function getNodeById(id) {
-  return state.nodes.find((node) => node.id === id) || null;
+  return state.nodes.find((node) => String(node.id) === String(id)) || null;
 }
 
 function getPathToNode(nodeId) {
-  const nodeMap = new Map(state.nodes.map((node) => [node.id, node]));
+  const nodeMap = new Map(state.nodes.map((node) => [String(node.id), node]));
   const path = [];
-  let cursor = nodeMap.get(nodeId);
+  let cursor = nodeMap.get(String(nodeId));
 
   while (cursor) {
     path.unshift(cursor);
-    cursor = cursor.parentId ? nodeMap.get(cursor.parentId) : null;
+    cursor = cursor.parentId ? nodeMap.get(String(cursor.parentId)) : null;
   }
 
   return path;
@@ -3366,12 +4098,21 @@ function syncChatInputAvailability() {
   el.chatInput.disabled = !canChat;
   const submitButton = el.chatForm?.querySelector("button[type='submit']");
   if (submitButton) {
-    submitButton.disabled = !canChat;
+    submitButton.disabled = !canChat || state.isSendingMessage;
+    submitButton.textContent = state.isSendingMessage
+      ? (state.chatSubmitStatusLabel || "처리 중...")
+      : "전송";
   }
 
   el.chatInput.placeholder = canChat
-    ? "질문을 입력하면 현재 선택 노드에서 분기됩니다."
+    ? (state.isSendingMessage ? "요청을 처리하는 중입니다..." : "질문을 입력하면 현재 선택 노드에서 분기됩니다.")
     : "로그인 후 질문을 입력할 수 있습니다.";
+}
+
+function setChatSubmitBusy(isBusy, label = "") {
+  state.isSendingMessage = Boolean(isBusy);
+  state.chatSubmitStatusLabel = isBusy ? String(label || "처리 중...") : "";
+  syncChatInputAvailability();
 }
 
 async function syncProfileFromServer() {

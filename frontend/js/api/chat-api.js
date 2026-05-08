@@ -75,12 +75,23 @@ export function getRoomTreeApi(roomId, token = "") {
   return request(`/api/chat/room/${roomId}/tree?t=${Date.now()}`, { method: "GET" }, token);
 }
 
-export function askChatApi({ roomId,parentId, message, token = "" }) {
+export function askChatApi({ roomId,parentId, message, token = "", forceCreateUnrelated = false, skipRootTopicGuard = false }) {
   return request(
     "/api/chat",
     {
       method: "POST",
-      body: JSON.stringify({ roomId, parentId, message })
+      body: JSON.stringify({ roomId, parentId, message, forceCreateUnrelated, skipRootTopicGuard })
+    },
+    token
+  );
+}
+
+export function checkRootTopicApi({ roomId, parentId, message, token = "" }) {
+  return request(
+    `/api/chat/room/${roomId}/root-topic-check`,
+    {
+      method: "POST",
+      body: JSON.stringify({ parentId, message })
     },
     token
   );
