@@ -120,6 +120,7 @@ p {
 
 .top-actions {
   display: flex;
+  align-items: center;
   gap: 0.6rem;
 }
 
@@ -738,6 +739,107 @@ input:focus {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 0.2rem 0.55rem;
+}
+
+.node-search {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.topbar-node-search {
+  position: relative;
+  width: clamp(240px, 24vw, 420px);
+  flex: 0 1 420px;
+}
+
+.node-search-box {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.node-search-select {
+  height: 40px;
+  min-width: 0;
+  border: 1px solid rgba(153, 184, 205, 0.35);
+  border-right: 0;
+  border-radius: 10px 0 0 10px;
+  background: rgba(10, 24, 32, 0.92);
+  color: #dcebf5;
+  padding: 0 0.5rem;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  outline: none;
+  cursor: pointer;
+}
+
+.node-search-input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 0.66rem;
+  border-radius: 0 10px 10px 0;
+  font-size: 0.84rem;
+}
+
+.node-search-results {
+  position: absolute;
+  z-index: 140;
+  top: calc(100% + 0.38rem);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 0.34rem;
+  max-height: min(320px, 52vh);
+  overflow: auto;
+  padding: 0.42rem;
+  border: 1px solid rgba(153, 186, 205, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(170deg, rgba(12, 30, 40, 0.98), rgba(8, 21, 29, 0.98));
+  box-shadow: 0 18px 38px rgba(2, 10, 16, 0.42);
+  backdrop-filter: blur(8px);
+}
+
+.node-search-result {
+  width: 100%;
+  display: grid;
+  gap: 0.16rem;
+  text-align: left;
+  border: 1px solid rgba(149, 189, 210, 0.24);
+  border-radius: 10px;
+  background: rgba(10, 24, 32, 0.66);
+  color: var(--text);
+  padding: 0.5rem 0.56rem;
+  cursor: pointer;
+}
+
+.node-search-result:hover,
+.node-search-result.active {
+  border-color: rgba(137, 255, 216, 0.72);
+  background: rgba(22, 63, 68, 0.58);
+}
+
+.node-search-result-title {
+  font-size: 0.84rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-search-result-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.node-search-empty {
+  padding: 0.52rem 0.56rem;
+  border: 1px dashed rgba(149, 189, 210, 0.24);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .tree-root {
@@ -1427,10 +1529,17 @@ body.tree-dragging * {
 
   .top-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .top-actions .btn {
     flex: 1;
+  }
+
+  .topbar-node-search {
+    order: 10;
+    width: 100%;
+    flex: 1 0 100%;
   }
 
   .hero-card h1 {

@@ -34,6 +34,8 @@ const state = {
   localConversationRooms: [],
   suppressNodeClick: false,
   selectedNodeId: null,
+  nodeSearchMode: "all",
+  nodeSearchQuery: "",
   nodes: [],
   treeNodes: [],
   pendingTreeMutations: [],
@@ -156,7 +158,11 @@ const el = {
   treeResizeHandle: document.getElementById("treeResizeHandle"),
   insightResizeHandle: document.getElementById("insightResizeHandle"),
   treePanel: document.querySelector(".tree-panel"),
-  insightPanel: document.querySelector(".insight-panel")
+  insightPanel: document.querySelector(".insight-panel"),
+  nodeSearchContainers: document.querySelectorAll("[data-node-search]"),
+  nodeSearchSelects: document.querySelectorAll(".node-search-select"),
+  nodeSearchInputs: document.querySelectorAll(".node-search-input"),
+  nodeSearchResults: document.querySelectorAll(".node-search-results")
 };
 
 bindEvents();
@@ -203,6 +209,16 @@ function bindEvents() {
   el.profileForm?.addEventListener("submit", onUpdateProfile);
   el.deleteAccountForm?.addEventListener("submit", onDeleteAccount);
   el.chatForm?.addEventListener("submit", onSendMessage);
+  el.nodeSearchSelects?.forEach((select) => {
+    select.addEventListener("change", () => {
+      setNodeSearchMode(select.value || "all");
+    });
+  });
+  el.nodeSearchInputs?.forEach((input) => {
+    input.addEventListener("input", () => {
+      setNodeSearchQuery(input.value);
+    });
+  });
 
   el.treeListModeBtn?.addEventListener("click", () => setTreeViewMode("list"));
   el.treeGraphModeBtn?.addEventListener("click", () => setTreeViewMode("graph"));
@@ -234,6 +250,7 @@ function bindEvents() {
 function render() {
   switchView(state.currentView);
   renderRoomDrawer();
+  renderNodeSearch();
   renderTree();
   renderChat();
   renderInsights();
@@ -1457,6 +1474,120 @@ function logout() {
   clearSession();
   switchView("landing");
   render();
+}
+
+function setNodeSearchMode(mode) {
+  state.nodeSearchMode = ["all", "question", "answer"].includes(mode) ? mode : "all";
+  renderNodeSearch();
+}
+
+function setNodeSearchQuery(query) {
+  state.nodeSearchQuery = String(query || "");
+  renderNodeSearch();
+}
+
+function renderNodeSearch() {
+  const isSearchVisible = state.currentView === "app";
+
+  el.nodeSearchContainers?.forEach((container) => {
+    container.classList.toggle("hidden", !isSearchVisible);
+  });
+
+  el.nodeSearchSelects?.forEach((select) => {
+    if (select.value !== state.nodeSearchMode) {
+      select.value = state.nodeSearchMode;
+    }
+  });
+
+  el.nodeSearchInputs?.forEach((input) => {
+    if (input.value !== state.nodeSearchQuery) {
+      input.value = state.nodeSearchQuery;
+    }
+  });
+
+  const query = state.nodeSearchQuery.trim();
+  const results = query ? getNodeSearchResults(query, state.nodeSearchMode) : [];
+
+  el.nodeSearchResults?.forEach((container) => {
+    container.innerHTML = "";
+    container.classList.toggle("hidden", !isSearchVisible || !query);
+
+    if (!isSearchVisible || !query) {
+      return;
+    }
+
+    if (results.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "node-search-empty";
+      empty.textContent = "검색 결과가 없습니다.";
+      container.appendChild(empty);
+      return;
+    }
+
+    results.forEach((node) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "node-search-result";
+      if (String(node.id) === String(state.selectedNodeId)) {
+        button.classList.add("active");
+      }
+      button.innerHTML = `
+        <span class="node-search-result-title">${escapeHtml(node.title || "제목 없는 노드")}</span>
+        <span class="node-search-result-meta">Depth ${escapeHtml(String(node.depth ?? "-"))} / ${escapeHtml(getNodeSearchMatchedLabel(node, query, state.nodeSearchMode))}</span>
+      `;
+      button.addEventListener("click", () => {
+        state.nodeSearchQuery = "";
+        selectNode(node.id);
+      });
+      container.appendChild(button);
+    });
+  });
+}
+
+function getNodeSearchResults(query, mode) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  return state.nodes
+    .filter((node) => !isAutoSubtopicSeedNode(node))
+    .filter((node) => doesNodeMatchSearch(node, normalizedQuery, mode))
+    .sort(compareTreeNodeOrder);
+}
+
+function doesNodeMatchSearch(node, normalizedQuery, mode) {
+  const question = normalizeSearchText(node.userQuestion);
+  const answer = normalizeSearchText(node.aiAnswer);
+
+  if (mode === "question") {
+    return question.includes(normalizedQuery);
+  }
+  if (mode === "answer") {
+    return answer.includes(normalizedQuery);
+  }
+  return question.includes(normalizedQuery) || answer.includes(normalizedQuery);
+}
+
+function getNodeSearchMatchedLabel(node, query, mode) {
+  const normalizedQuery = normalizeSearchText(query);
+  const questionMatched = normalizeSearchText(node.userQuestion).includes(normalizedQuery);
+  const answerMatched = normalizeSearchText(node.aiAnswer).includes(normalizedQuery);
+
+  if (mode === "question") {
+    return "질문 일치";
+  }
+  if (mode === "answer") {
+    return "답변 일치";
+  }
+  if (questionMatched && answerMatched) {
+    return "질문/답변 일치";
+  }
+  return questionMatched ? "질문 일치" : "답변 일치";
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").trim().toLocaleLowerCase("ko-KR");
 }
 
 function renderTree() {

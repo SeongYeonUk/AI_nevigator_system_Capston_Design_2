@@ -50,6 +50,17 @@
     <nav class="top-actions">
       <button id="openLoginBtn" class="btn btn-ghost" type="button">로그인</button>
       <button id="openSignupBtn" class="btn btn-primary" type="button">회원가입</button>
+      <div class="node-search topbar-node-search hidden" data-node-search>
+        <div class="node-search-box">
+          <select class="node-search-select" aria-label="노드 검색 범위">
+            <option value="all">모두</option>
+            <option value="question">질문</option>
+            <option value="answer">답변</option>
+          </select>
+          <input class="node-search-input" type="search" placeholder="노드 검색" autocomplete="off" />
+        </div>
+        <div class="node-search-results" aria-live="polite"></div>
+      </div>
       <button id="openHomeBtn" class="btn btn-ghost hidden" type="button">홈</button>
       <button id="openSettingsBtn" class="btn btn-ghost hidden" type="button">설정</button>
       <button id="openRoomsBtn" class="btn btn-ghost hidden" type="button">채팅목록</button>
