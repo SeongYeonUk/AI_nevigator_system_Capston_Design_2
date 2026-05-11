@@ -1,6 +1,7 @@
 ﻿<!DOCTYPE html>
 <html lang="ko">
 <head>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PathLearn AI - 대화 경로 학습 플랫폼</title>
@@ -40,16 +41,18 @@
   </div>
 
   <header class="topbar">
-    <div class="brand">
+    <div class="brand" id="brandHomeBtn" style="cursor: pointer; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
       <div class="brand-mark">PL</div>
       <div class="brand-text">
         <strong>PathLearn AI</strong>
         <span>Conversation Navigation Studio</span>
       </div>
     </div>
+    
     <nav class="top-actions">
       <button id="openLoginBtn" class="btn btn-ghost" type="button">로그인</button>
       <button id="openSignupBtn" class="btn btn-primary" type="button">회원가입</button>
+      
       <div class="node-search topbar-node-search hidden" data-node-search>
         <div class="node-search-box">
           <select class="node-search-select" aria-label="노드 검색 범위">
@@ -61,7 +64,7 @@
         </div>
         <div class="node-search-results" aria-live="polite"></div>
       </div>
-      <button id="openHomeBtn" class="btn btn-ghost hidden" type="button">홈</button>
+      
       <button id="openSettingsBtn" class="btn btn-ghost hidden" type="button">설정</button>
       <button id="openRoomsBtn" class="btn btn-ghost hidden" type="button">채팅목록</button>
       <button id="logoutBtn" class="btn btn-ghost hidden" type="button">로그아웃</button>

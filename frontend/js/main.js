@@ -88,6 +88,7 @@ const el = {
   appView: document.getElementById("appView"),
   settingsView: document.getElementById("settingsView"),
 
+  brandHomeBtn: document.getElementById("brandHomeBtn"),
   openLoginBtn: document.getElementById("openLoginBtn"),
   openSignupBtn: document.getElementById("openSignupBtn"),
   openHomeBtn: document.getElementById("openHomeBtn"),
@@ -181,10 +182,14 @@ function bindEvents() {
     switchView("auth", "signup");
     render();
   });
-  el.openHomeBtn?.addEventListener("click", () => {
+  
+  // 🌟 기존 openHomeBtn을 지우고, brandHomeBtn(로고) 클릭 이벤트로 교체했습니다.
+  const brandHomeBtn = document.getElementById("brandHomeBtn");
+  brandHomeBtn?.addEventListener("click", () => {
     switchView("landing");
     render();
   });
+
   el.openSettingsBtn?.addEventListener("click", openSettingsView);
   el.openRoomsBtn?.addEventListener("click", async () => {
     if (!state.currentSession?.accessToken) {
@@ -3708,6 +3713,8 @@ async function executeKnowledgeExtraction(payload) {
     if (!response.ok) throw new Error(`요청 실패 (상태: ${response.status})`);
     const resultText = await response.text();
     contentArea.innerHTML = resultText.replace(/\n/g, "<br>");
+    // 🌟 핵심: 결과 텍스트를 마크다운으로 렌더링
+    contentArea.innerHTML = marked.parse(resultText);
 
   } catch (error) {
     console.error("지식 추출 에러:", error);
@@ -4031,7 +4038,15 @@ function makeBubble(role, text, timestamp, nodeId = null, isSelected = false) {
     bubble.dataset.nodeId = String(nodeId);
   }
   const time = new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  bubble.innerHTML = `${escapeHtml(text)}<span class="time">${role === "user" ? "You" : "AI"} / ${time}</span>`;
+  // 🌟 핵심: AI 답변(마크다운)을 HTML로 변환
+  let displayContent = text;
+  if (role === "ai") {
+    displayContent = marked.parse(text); // 마크다운 -> HTML 변환
+  } else {
+    displayContent = escapeHtml(text); // 유저 질문은 보안을 위해 일반 텍스트 처리
+  }
+
+  bubble.innerHTML = `${displayContent}<span class="time">${role === "user" ? "You" : "AI"} / ${time}</span>`;
   return bubble;
 }
 
@@ -4286,8 +4301,6 @@ function escapeHtml(value) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
-
-
 
 
 

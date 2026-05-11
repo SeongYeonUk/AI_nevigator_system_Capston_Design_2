@@ -1550,48 +1550,149 @@ body.tree-dragging * {
     grid-template-columns: 1fr;
   }
 }
-/* --- AI 답변 가독성 향상 (들여쓰기 및 줄바꿈) --- */
+/* ============================================================
+   MARKDOWN TYPOGRAPHY UPGRADE (한국어 가독성 & 정렬 완벽 해결)
+   ============================================================ */
 
-/* 1. 대화창(Chat Feed)의 AI 말풍선 설정 */
+/* 1. 기본 텍스트 룰 (한국어 가독성 비밀무기 추가) */
 .bubble.ai {
-  white-space: pre-wrap;   /* 👈 핵심: 줄바꿈과 연속된 공백(들여쓰기)을 그대로 표시 */
-  word-break: break-word;  /* 너무 긴 단어는 박스 밖으로 나가지 않게 조절 */
-  line-height: 1.6;        /* 줄 간격을 넓혀 읽기 편하게 함 */
-  padding: 0.8rem 1rem;    /* 여백 확보 */
+    word-break: keep-all !important; /* 🌟 한국어 단어가 중간에 끊기지 않게 보호 */
+    line-height: 1.65 !important; /* 줄간격을 살짝 더 넓혀서 눈을 편안하게 */
 }
 
-/* 2. 인사이트 패널(오른쪽)의 상세 답변 영역 설정 */
-.ai-answer-body {
-  white-space: pre-wrap;   /* 👈 핵심: 여기서도 줄바꿈/들여쓰기 유지 */
-  line-height: 1.6;
-  color: var(--text);
-  font-size: 0.92rem;
-  margin-top: 0.6rem;
-  padding: 0.8rem;
-  background: var(--bg-soft); /* 기존 변수 활용 */
-  border-radius: 12px;
-  border: 1px solid var(--line);
+/* 2. 일반 문단(p) 호흡 */
+.bubble.ai p {
+    margin-top: 0 !important;
+    margin-bottom: 12px !important;
+    display: block !important;
 }
 
-/* 3. 마크다운 리스트(점) 스타일 강제 적용 */
-/* 만약 marked.js를 사용한다면 리스트가 보일 수 있도록 여백을 줍니다. */
-.ai-answer-body ul, .ai-msg ul,
-.ai-answer-body ol, .ai-msg ol {
-  margin-left: 1.5rem;    /* 왼쪽 들여쓰기 공간 확보 */
-  margin-bottom: 1rem;
-  list-style: disc !important; /* 리스트 점(Bullet) 강제 표시 */
+/* 3. 리스트 컨테이너 (들여쓰기와 내어쓰기의 핵심) */
+.bubble.ai ul, 
+.bubble.ai ol {
+    margin-top: 12px !important;
+    margin-bottom: 16px !important;
+    padding-left: 26px !important; /* 👈 숫자가 들어갈 공간을 확실히 확보 (26px) */
+    list-style-position: outside !important; /* 🌟 기호를 텍스트 밖으로 밀어내서 2번째 줄부터 글자 라인이 딱 맞게 정렬됨 */
 }
 
-.ai-answer-body li, .ai-msg li {
-  margin-bottom: 0.4rem;  /* 리스트 항목 간 간격 */
+/* 4. 리스트 항목(li) 간격 */
+.bubble.ai li {
+    margin-top: 8px !important;
+    margin-bottom: 12px !important; /* 항목 사이를 시원하게 띄움 */
+    padding-left: 2px !important; /* 기호와 텍스트 사이의 미세 간격 */
 }
 
-/* 4. 강조(Bold) 텍스트 스타일 */
-.ai-answer-body strong, .ai-msg strong {
-  color: var(--accent);   /* 민교님의 포인트 컬러(#37c6a5) 적용 */
-  font-weight: 700;
+/* 5. 리스트 내부의 p 태그가 만드는 이중 여백 제거 */
+.bubble.ai li p {
+    margin: 0 !important;
+    display: block !important; 
 }
 
+/* 6. 마지막 여백 제거 (말풍선 핏 유지) */
+.bubble.ai > *:last-child {
+    margin-bottom: 0 !important;
+}
 
+/* ============================================================
+   TOPBAR SEARCH UI UPGRADE (모던 알약 스타일)
+   ============================================================ */
 
+/* 1. 검색창 전체를 감싸는 부드러운 캡슐 (기본 상태) */
+.node-search-box {
+    display: flex;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.05); /* 아주 옅은 반투명 배경 */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 24px; /* 알약처럼 둥글게 깎기 */
+    padding: 2px 14px;
+    transition: all 0.3s ease; /* 부드러운 애니메이션 효과 */
+}
 
+/* 🌟 캡슐 내부(입력창이나 셀렉트)를 클릭했을 때 전체 테두리에 민트색 네온 효과 */
+.node-search-box:focus-within {
+    border-color: #43dab8;
+    background: rgba(0, 0, 0, 0.2);
+    box-shadow: 0 0 10px rgba(67, 218, 184, 0.2);
+}
+
+/* 2. 셀렉트 박스 (브라우저 특유의 투박한 기본 화살표와 배경 벗겨내기) */
+.node-search-select {
+    background: transparent;
+    color: #e0e0e0;
+    border: none;
+    padding: 6px 4px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    outline: none;
+    cursor: pointer;
+    /* 기본 화살표 없애고 심플하게 만듭니다 */
+    appearance: none; 
+    -webkit-appearance: none;
+}
+
+/* 셀렉트 박스를 클릭해서 나오는 목록(옵션)은 잘 보이게 어두운 배경 처리 */
+.node-search-select option {
+    background-color: #1a1a1a;
+    color: #fff;
+}
+
+/* 3. 검색어 입력창 */
+.node-search-input {
+    background: transparent;
+    color: #fff;
+    border: none;
+    /* 셀렉트 박스와 입력창 사이의 은은한 세로 구분선 */
+    border-left: 1px solid rgba(255, 255, 255, 0.15); 
+    margin-left: 8px;
+    padding: 6px 8px 6px 12px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    outline: none;
+    width: 200px;
+    transition: width 0.3s ease; /* 너비가 늘어날 때 부드럽게 */
+}
+
+/* 플레이스홀더(검색어 입력 전 흐릿한 글씨) 색상 조절 */
+.node-search-input::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+/* 🌟 (보너스 디테일) 검색창을 클릭하면 입력하기 편하도록 길이가 살짝 늘어납니다 */
+.node-search-input:focus {
+    width: 250px; 
+}
+/* ============================================================
+   TOPBAR BUTTON ALIGNMENT FIX (우측 버튼 글자 쏠림 완벽 해결)
+   ============================================================ */
+
+/* 1. 상단바 우측 전체 컨테이너를 수직 중앙으로 꽉 잡아줍니다 */
+.top-actions {
+    display: flex;
+    align-items: center !important;
+    gap: 8px; /* 검색창과 버튼들 사이에 적당한 숨통(간격) 트기 */
+}
+
+/* 2. 버튼 텍스트가 바닥으로 가라앉는 현상 차단 (숨김 속성 존중 버전) */
+.top-actions .btn:not(.hidden) {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: 36px !important;
+    line-height: 1 !important;
+    padding: 0 16px !important;
+    margin: 0 !important;
+    white-space: nowrap !important;
+}
+/* ============================================================
+   UX/UI UPGRADE 3: 고스트 버튼 인터랙션
+   ============================================================ */
+.btn-ghost {
+    transition: all 0.2s ease;
+    border-radius: 8px;
+}
+
+.btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.08) !important; /* 살짝 밝아지는 배경 */
+    color: #43dab8 !important; /* 글씨도 민트색으로 반짝! */
+}
