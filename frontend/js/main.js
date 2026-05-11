@@ -191,15 +191,21 @@ function bindEvents() {
   });
 
   el.openSettingsBtn?.addEventListener("click", openSettingsView);
+  // 🌟 기존 el.openRoomsBtn 이벤트를 아래 코드로 교체하세요
   el.openRoomsBtn?.addEventListener("click", async () => {
     if (!state.currentSession?.accessToken) {
       switchView("auth", "login");
       return;
     }
+    
+    // 현재 랜딩 페이지 등 다른 화면에 있다면 앱 화면으로 전환 후 강제 열기
     if (state.currentView !== "app") {
       await openAppView();
+      toggleRoomDrawer(true); 
+    } else {
+      // 🌟 이미 앱 화면에 있다면 누를 때마다 열림/닫힘 토글!
+      toggleRoomDrawer(); 
     }
-    toggleRoomDrawer(true);
   });
   el.heroStartBtn?.addEventListener("click", onHeroStartClick);
   el.heroDemoBtn?.addEventListener("click", onHeroDemoClick);
@@ -4245,9 +4251,15 @@ function syncChatInputAvailability() {
   const submitButton = el.chatForm?.querySelector("button[type='submit']");
   if (submitButton) {
     submitButton.disabled = !canChat || state.isSendingMessage;
-    submitButton.textContent = state.isSendingMessage
-      ? (state.chatSubmitStatusLabel || "처리 중...")
-      : "전송";
+    
+    // 🌟 핵심: 텍스트 대신 '전송(화살표)'과 '처리중(스피너)' SVG 아이콘을 상황에 맞게 렌더링
+    if (state.isSendingMessage) {
+      // 로딩 중: 빙글빙글 도는 스피너 아이콘
+      submitButton.innerHTML = `<svg class="animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>`;
+    } else {
+      // 평상시: 세련된 오른쪽 화살표 아이콘
+      submitButton.innerHTML = `<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"></path></svg>`;
+    }
   }
 
   el.chatInput.placeholder = canChat

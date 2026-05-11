@@ -1595,104 +1595,395 @@ body.tree-dragging * {
 }
 
 /* ============================================================
-   TOPBAR SEARCH UI UPGRADE (모던 알약 스타일)
+   1. 스르륵 확장되는 매직 검색창 (Expandable Search)
    ============================================================ */
 
-/* 1. 검색창 전체를 감싸는 부드러운 캡슐 (기본 상태) */
+/* 기본 상태: 아이콘 크기(36x36)로 둥글게 숨김 */
 .node-search-box {
     display: flex;
     align-items: center;
-    background: rgba(255, 255, 255, 0.05); /* 아주 옅은 반투명 배경 */
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 24px; /* 알약처럼 둥글게 깎기 */
-    padding: 2px 14px;
-    transition: all 0.3s ease; /* 부드러운 애니메이션 효과 */
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 24px;
+    padding: 0;
+    height: 36px;
+    width: 36px; /* 평소엔 아이콘 크기만큼만 */
+    overflow: hidden;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); /* 쫀득한 애니메이션 */
 }
 
-/* 🌟 캡슐 내부(입력창이나 셀렉트)를 클릭했을 때 전체 테두리에 민트색 네온 효과 */
+/* 돋보기 아이콘 (클릭/호버 영역) */
+.search-icon-label {
+    color: #b0b0b0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    transition: color 0.2s ease, transform 0.2s ease;
+}
+
+/* 평소에는 내용물(select, input) 크기 0으로 투명하게 숨김 */
+.node-search-select,
+.node-search-input {
+    width: 0;
+    padding: 0;
+    opacity: 0;
+    border: none !important; /* 테두리 원천 차단 */
+    background: transparent;
+    transition: all 0.4s ease;
+    pointer-events: none;
+    outline: none !important; /* 포커스 시 생기는 외곽선 차단 */
+}
+
+.node-search-select {
+    color: #e0e0e0;
+    font-size: 0.85rem;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.node-search-input {
+    color: #fff;
+    font-size: 0.9rem;
+}
+
+.node-search-select option {
+    background-color: #1a1a1a;
+    color: #fff;
+}
+
+/* 마우스 호버(hover)나 입력창 클릭(focus) 시 확장 애니메이션 */
+.node-search-box:hover,
+.node-search-box:focus-within {
+    width: 300px; /* 쭉 늘어날 너비 */
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 0 14px 0 4px;
+}
+
+/* 포커스 시 민트색 네온 효과 */
 .node-search-box:focus-within {
     border-color: #43dab8;
     background: rgba(0, 0, 0, 0.2);
     box-shadow: 0 0 10px rgba(67, 218, 184, 0.2);
 }
 
-/* 2. 셀렉트 박스 (브라우저 특유의 투박한 기본 화살표와 배경 벗겨내기) */
-.node-search-select {
-    background: transparent;
-    color: #e0e0e0;
-    border: none;
-    padding: 6px 4px;
-    font-family: inherit;
-    font-size: 0.85rem;
-    outline: none;
+/* 확장되었을 때 글씨 치는 칸(Select, Input) 나타나기 */
+.node-search-box:hover .node-search-select,
+.node-search-box:focus-within .node-search-select {
+    width: auto;
+    opacity: 1;
+    padding: 6px 8px;
+    pointer-events: auto;
     cursor: pointer;
-    /* 기본 화살표 없애고 심플하게 만듭니다 */
-    appearance: none; 
-    -webkit-appearance: none;
 }
 
-/* 셀렉트 박스를 클릭해서 나오는 목록(옵션)은 잘 보이게 어두운 배경 처리 */
-.node-search-select option {
-    background-color: #1a1a1a;
-    color: #fff;
-}
-
-/* 3. 검색어 입력창 */
-.node-search-input {
-    background: transparent;
-    color: #fff;
-    border: none;
-    /* 셀렉트 박스와 입력창 사이의 은은한 세로 구분선 */
-    border-left: 1px solid rgba(255, 255, 255, 0.15); 
+.node-search-box:hover .node-search-input,
+.node-search-box:focus-within .node-search-input {
+    width: 100%;
+    opacity: 1;
+    padding: 6px 8px;
     margin-left: 8px;
-    padding: 6px 8px 6px 12px;
-    font-family: inherit;
-    font-size: 0.9rem;
-    outline: none;
-    width: 200px;
-    transition: width 0.3s ease; /* 너비가 늘어날 때 부드럽게 */
+    border-left: 1px solid rgba(255, 255, 255, 0.15);
+    pointer-events: auto;
 }
 
-/* 플레이스홀더(검색어 입력 전 흐릿한 글씨) 색상 조절 */
-.node-search-input::placeholder {
-    color: rgba(255, 255, 255, 0.3);
-}
+/* 돋보기 아이콘 상태 변화 (호버 시 하얀색, 포커스 시 민트색) */
+.node-search-box:hover .search-icon-label { color: #fff; transform: scale(1.1); }
+.node-search-box:focus-within .search-icon-label { color: #43dab8; }
 
-/* 🌟 (보너스 디테일) 검색창을 클릭하면 입력하기 편하도록 길이가 살짝 늘어납니다 */
-.node-search-input:focus {
-    width: 250px; 
-}
+
 /* ============================================================
-   TOPBAR BUTTON ALIGNMENT FIX (우측 버튼 글자 쏠림 완벽 해결)
+   2. 상단바 버튼 정렬 및 테두리/배경 깔끔하게 제거
    ============================================================ */
 
-/* 1. 상단바 우측 전체 컨테이너를 수직 중앙으로 꽉 잡아줍니다 */
+/* 전체 컨테이너 수직 정렬 */
 .top-actions {
     display: flex;
     align-items: center !important;
-    gap: 8px; /* 검색창과 버튼들 사이에 적당한 숨통(간격) 트기 */
+    gap: 8px;
 }
 
-/* 2. 버튼 텍스트가 바닥으로 가라앉는 현상 차단 (숨김 속성 존중 버전) */
+/* 버튼 속성 리셋 (요청하신 테두리 제거 포함) */
 .top-actions .btn:not(.hidden) {
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
     height: 36px !important;
     line-height: 1 !important;
-    padding: 0 16px !important;
+    padding: 0 10px !important; /* 아이콘에 맞게 여백 축소 */
     margin: 0 !important;
-    white-space: nowrap !important;
-}
-/* ============================================================
-   UX/UI UPGRADE 3: 고스트 버튼 인터랙션
-   ============================================================ */
-.btn-ghost {
-    transition: all 0.2s ease;
+    border: none !important; /* 🌟 테두리 완벽 제거 */
+    outline: none !important;
+    background: transparent !important; /* 🌟 기본 배경색도 완전 투명하게 */
+    box-shadow: none !important; /* 그림자 제거 */
     border-radius: 8px;
 }
 
-.btn-ghost:hover {
-    background: rgba(255, 255, 255, 0.08) !important; /* 살짝 밝아지는 배경 */
-    color: #43dab8 !important; /* 글씨도 민트색으로 반짝! */
+/* 마우스 올렸을 때 버튼 배경 (은은하게만) */
+.top-actions .btn-ghost:not(.hidden):hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ============================================================
+   3. SVG 아이콘 최적화 (기본 회색 -> 민트색 반응)
+   ============================================================ */
+
+.top-actions .btn-ghost svg {
+    color: #b0b0b0; 
+    transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.top-actions .btn-ghost:hover svg {
+    color: #43dab8 !important;
+    transform: scale(1.1);
+}
+/* ============================================================
+   1. 스르륵 확장 검색창 (다크 테마 완벽 동기화 & 강제 적용)
+   ============================================================ */
+
+/* 기본 상태: 완전히 아이콘처럼 보이게 숨김 (기존 둥근 캡슐 버리고 네모 반듯하게!) */
+.topbar .node-search-box {
+    display: flex !important;
+    align-items: center !important;
+    background: transparent !important; 
+    border: 1px solid transparent !important;
+    border-radius: 8px !important; /* 우측 아이콘 버튼들과 똑같은 각도 */
+    padding: 0 !important;
+    height: 36px !important;
+    width: 36px !important; /* 🌟 핵심: 평소엔 무조건 36px 강제 고정 */
+    overflow: hidden !important;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* 돋보기 아이콘 */
+.topbar .search-icon-label {
+    color: #b0b0b0 !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 36px !important;
+    height: 36px !important;
+    flex-shrink: 0 !important;
+    transition: all 0.2s ease !important;
+    margin: 0 !important;
+}
+
+/* 내부 요소 완전 투명화 및 무력화 */
+.topbar .node-search-select,
+.topbar .node-search-input {
+    width: 0 !important;
+    opacity: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: #fff !important;
+    font-size: 0.85rem !important;
+    pointer-events: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* 🌟 브라우저 기본 화살표, X버튼 등 촌스러운 요소 완벽 제거 */
+.topbar .node-search-select {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+}
+.topbar .node-search-input::-webkit-search-cancel-button {
+    -webkit-appearance: none !important;
+}
+.topbar .node-search-select option {
+    background-color: #1a1a1a !important;
+    color: #fff !important;
+}
+
+/* ============================================================
+   🌟 마우스 오버 or 클릭 시 스르륵 확장되는 애니메이션
+   ============================================================ */
+.topbar .node-search-box:hover,
+.topbar .node-search-box:focus-within {
+    width: 260px !important; /* 열렸을 때 길이 */
+    background: rgba(0, 0, 0, 0.25) !important; /* 다크 테마에 찰떡인 딥블랙 */
+    border: 1px solid rgba(67, 218, 184, 0.4) !important; /* 은은한 민트색 테두리 */
+}
+
+.topbar .node-search-box:focus-within {
+    border-color: #43dab8 !important; /* 클릭 시 선명한 민트 불빛 */
+    box-shadow: 0 0 8px rgba(67, 218, 184, 0.15) !important;
+}
+
+/* 확장 시 숨겨둔 내용물(Select, Input) 스무스하게 등장 */
+.topbar .node-search-box:hover .node-search-select,
+.topbar .node-search-box:focus-within .node-search-select {
+    width: 50px !important;
+    opacity: 1 !important;
+    padding: 0 4px 0 8px !important;
+    pointer-events: auto !important;
+    cursor: pointer !important;
+}
+
+.topbar .node-search-box:hover .node-search-input,
+.topbar .node-search-box:focus-within .node-search-input {
+    width: 100% !important;
+    opacity: 1 !important;
+    padding: 0 8px !important;
+    margin-left: 4px !important;
+    border-left: 1px solid rgba(255, 255, 255, 0.1) !important; /* 얇고 고급스러운 구분선 */
+    pointer-events: auto !important;
+}
+
+/* 아이콘 색상 반응 (마우스 올리면 하얗게, 클릭하면 민트색) */
+.topbar .node-search-box:hover .search-icon-label { color: #fff !important; transform: scale(1.05) !important; }
+.topbar .node-search-box:focus-within .search-icon-label { color: #43dab8 !important; }
+
+/* ============================================================
+   🌟 검색창 래퍼(Wrapper) 여백 제거 및 버튼 일렬 정렬 강제
+   ============================================================ */
+
+/* 1. 검색창을 감싸는 투명 껍데기가 쓸데없는 공간을 차지하지 못하게 차단 */
+.topbar .node-search {
+    flex: 0 0 auto !important; /* 남는 공간을 억지로 차지하지 않음 */
+    margin: 0 !important;
+    padding: 0 !important;
+    width: auto !important;
+}
+
+/* 2. 상단바 액션 컨테이너를 우측으로 꽉 뭉치게 만듦 */
+.top-actions {
+    justify-content: flex-end !important; /* 모든 버튼을 오른쪽으로 밀착! */
+    gap: 8px !important; /* 버튼 사이 간격은 딱 8px만 */
+}
+
+/* ============================================================
+   UX/UI UPGRADE 7 (수정): 채팅 전송 버튼 무색(고스트) 스타일
+   ============================================================ */
+
+/* 전송 버튼 기본 상태: 배경 무색, 아이콘은 차분한 회색 */
+.chat-form button[type='submit'] {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 40px !important;
+    height: 40px !important;
+    padding: 0 !important;
+    border-radius: 8px !important; 
+    background: transparent !important; /* 🌟 배경색 완전 투명화 */
+    color: #b0b0b0 !important; /* 화살표 기본 색상: 은은한 회색 */
+    border: none !important;
+    transition: all 0.2s ease !important;
+    flex-shrink: 0;
+}
+
+/* 🌟 마우스 올렸을 때: 화살표가 민트색으로 스르륵 불 들어옴! */
+.chat-form button[type='submit']:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05) !important; /* 튀지 않는 은은한 배경만 */
+    color: #43dab8 !important; /* 민트색 포인트! */
+    transform: scale(1.1) !important; /* 상단바 버튼처럼 살짝 커지는 애니메이션 */
+}
+
+/* 입력할 수 없을 때(비활성화)는 아예 눈에 띄지 않게 흐리게 처리 */
+.chat-form button[type='submit']:disabled {
+    background: transparent !important;
+    color: rgba(255, 255, 255, 0.15) !important;
+    cursor: not-allowed !important;
+    transform: none !important;
+}
+
+/* JS에서 사용하는 로딩 스피너 애니메이션 (이건 그대로 유지) */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+#branchTag {
+    display: none !important;
+}
+/* ============================================================
+   UX/UI UPGRADE 9 (재수정): 대화창 제목 영역 완전 컷팅
+   ============================================================ */
+
+/* 1. .chat-panel 안에 있는 모든 제목 태그와 헤더 영역을 싹 다 숨깁니다 */
+.chat-panel h2,
+.chat-panel h3,
+.chat-panel .panel-header,
+.chat-panel .chat-header,
+.chat-panel header {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    visibility: hidden !important;
+}
+
+/* 2. 제목이 사라진 자리에 채팅 피드가 바로 붙도록 상단 여백 제거 */
+#chatFeed {
+    border-top: none !important;
+    margin-top: 0 !important;
+    padding-top: 15px !important; /* 글자가 맨 위에 너무 붙지 않게 숨통만 살짝 */
+}
+/* ============================================================
+   UX/UI UPGRADE 10 (완결): 회색 팝업 방지 & 초슬림 스크롤바
+   ============================================================ */
+
+/* 1. 스크롤바 영역을 항상 4px로 고정 (마우스 올려도 두꺼워지지 않음) */
+#chatFeed::-webkit-scrollbar,
+.tree-panel::-webkit-scrollbar,
+.insight-panel::-webkit-scrollbar,
+.room-drawer::-webkit-scrollbar,
+*::-webkit-scrollbar {
+    width: 4px !important; 
+    height: 4px !important;
+    display: block !important;
+}
+
+/* 2. 바탕(Track)은 마우스를 올리든 말든 무조건 투명하게 유지 */
+#chatFeed::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+    background: transparent !important;
+}
+
+/* 3. 막대기(Thumb) - 평소에는 거의 안 보일 정도로 투명하게 (0.05) */
+#chatFeed::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.05) !important; 
+    border-radius: 10px !important;
+    border: none !important;
+    transition: background-color 0.3s ease !important;
+}
+
+/* 4. 🌟 핵심: 마우스를 대도 "회색"이 아니라 은은한 "민트 회색"으로만 표시 */
+/* 요소에 마우스를 올렸을 때(hover) 브라우저 기본값이 끼어들지 못하게 강제함 */
+#chatFeed:hover::-webkit-scrollbar-thumb,
+.tree-panel:hover::-webkit-scrollbar-thumb,
+.insight-panel:hover::-webkit-scrollbar-thumb,
+.room-drawer:hover::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(67, 218, 184, 0.25) !important; /* 칙칙한 회색 대신 세련된 민트광택 */
+}
+
+/* 1. 크롬, 엣지, 사파리 (Webkit 엔진) */
+*::-webkit-scrollbar {
+    width: 4px !important;
+    height: 4px !important;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent !important;
+}
+
+*::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    border-radius: 10px !important;
+}
+
+/* 마우스를 올렸을 때만 선명해지게 (회색 팝업 방지) */
+*:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(67, 218, 184, 0.25) !important;
 }
