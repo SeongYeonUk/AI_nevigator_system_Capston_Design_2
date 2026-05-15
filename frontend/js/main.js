@@ -23,12 +23,24 @@ if (typeof window !== "undefined") {
 }
 
 let transparentDragImage = null;
+let graphNodeClickTimer = null;
+let lastGraphNodePointerDown = {
+  nodeId: null,
+  time: 0,
+  x: 0,
+  y: 0
+};
 
 const state = {
   currentSession: loadSession(),
   currentView: "landing",
   treeViewMode: "list",
   graphZoom: 1,
+  graphNodeShape: "circle",
+  graphNodeSizeScale: 1,
+  graphResizeMode: false,
+  graphNodeSizeById: new Map(),
+  collapsedGraphNodeIds: new Set(),
   roomDeleteMode: false,
   selectedRoomIdsForDelete: new Set(),
   localConversationRooms: [],
@@ -132,6 +144,9 @@ const el = {
   graphZoomLevel: document.getElementById("graphZoomLevel"),
   graphZoomFooter: document.getElementById("graphZoomFooter"),
   treeBuildStatus: document.getElementById("treeBuildStatus"),
+  graphCircleShapeBtn: document.getElementById("graphCircleShapeBtn"),
+  graphBoxShapeBtn: document.getElementById("graphBoxShapeBtn"),
+  graphResizeModeBtn: document.getElementById("graphResizeModeBtn"),
 
   branchTag: document.getElementById("branchTag"),
   chatFeed: document.getElementById("chatFeed"),
@@ -236,6 +251,9 @@ function bindEvents() {
   el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(0.2));
   el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-0.2));
   el.graphZoomResetBtn?.addEventListener("click", resetGraphZoom);
+  el.graphCircleShapeBtn?.addEventListener("click", () => setGraphNodeShape("circle"));
+  el.graphBoxShapeBtn?.addEventListener("click", () => setGraphNodeShape("box"));
+  el.graphResizeModeBtn?.addEventListener("click", toggleGraphResizeMode);
 
   el.roomDrawerToggle?.addEventListener("click", () => toggleRoomDrawer());
   el.roomDrawerCloseBtn?.addEventListener("click", () => toggleRoomDrawer(false));
@@ -322,6 +340,13 @@ function getTreeSourceNodes() {
 
 function getRenderableTreeNodes() {
   if (state.treeBuildStatus === "processing") {
+    const selectedExistsInTree = state.selectedNodeId
+      && state.treeNodes.some((node) => String(node.id) === String(state.selectedNodeId));
+    const selectedExistsInNodes = state.selectedNodeId
+      && state.nodes.some((node) => String(node.id) === String(state.selectedNodeId));
+    if (selectedExistsInNodes && !selectedExistsInTree) {
+      return state.nodes;
+    }
     return state.treeNodes;
   }
   return state.treeNodes.length ? state.treeNodes : state.nodes;
@@ -400,21 +425,34 @@ function createGraphTreeDragPreview(nodeId) {
     .filter((link) => subtreeIds.has(link.dataset.sourceId) && subtreeIds.has(link.dataset.targetId));
 
   const bounds = nodeGroups.reduce((acc, group) => {
-    const circle = group.querySelector("circle");
+    const shape = group.querySelector(".tree-node-circle, .tree-node-box");
     const label = group.querySelector("text");
-    const cx = Number(circle?.getAttribute("cx")) || 0;
-    const cy = Number(circle?.getAttribute("cy")) || 0;
-    const r = Number(circle?.getAttribute("r")) || 20;
+    const isBox = shape?.tagName?.toLowerCase() === "rect";
+    const rx = Number(shape?.getAttribute("rx")) || Number(shape?.getAttribute("r")) || 20;
+    const ry = Number(shape?.getAttribute("ry")) || Number(shape?.getAttribute("r")) || 20;
+    const shapeMinX = isBox
+      ? Number(shape?.getAttribute("x")) || 0
+      : (Number(shape?.getAttribute("cx")) || 0) - rx;
+    const shapeMaxX = isBox
+      ? shapeMinX + (Number(shape?.getAttribute("width")) || 0)
+      : (Number(shape?.getAttribute("cx")) || 0) + rx;
+    const shapeMinY = isBox
+      ? Number(shape?.getAttribute("y")) || 0
+      : (Number(shape?.getAttribute("cy")) || 0) - ry;
+    const shapeMaxY = isBox
+      ? shapeMinY + (Number(shape?.getAttribute("height")) || 0)
+      : (Number(shape?.getAttribute("cy")) || 0) + ry;
     const textWidth = Math.max(44, String(label?.textContent || "").length * 8);
-    acc.minX = Math.min(acc.minX, cx - Math.max(r, textWidth / 2));
-    acc.maxX = Math.max(acc.maxX, cx + Math.max(r, textWidth / 2));
-    acc.minY = Math.min(acc.minY, cy - r - 6);
-    acc.maxY = Math.max(acc.maxY, cy + r + 12);
+    const centerX = (shapeMinX + shapeMaxX) / 2;
+    acc.minX = Math.min(acc.minX, shapeMinX, centerX - textWidth / 2);
+    acc.maxX = Math.max(acc.maxX, shapeMaxX, centerX + textWidth / 2);
+    acc.minY = Math.min(acc.minY, shapeMinY - 6);
+    acc.maxY = Math.max(acc.maxY, shapeMaxY + 12);
     return acc;
   }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
 
   const sourceGroup = nodeGroups.find((group) => group.dataset.nodeId === String(nodeId)) || nodeGroups[0];
-  const sourceCircle = sourceGroup?.querySelector("circle");
+  const sourceShape = sourceGroup?.querySelector(".tree-node-circle, .tree-node-box");
 
   const padding = 14;
   const minX = bounds.minX - padding;
@@ -443,14 +481,23 @@ function createGraphTreeDragPreview(nodeId) {
   nodeGroups.forEach((group) => {
     const clone = group.cloneNode(true);
     clone.setAttribute("class", "tree-node-group");
-    clone.querySelectorAll("circle").forEach((circle) => {
-      circle.setAttribute("cx", String((Number(circle.getAttribute("cx")) || 0) - minX));
-      circle.setAttribute("cy", String((Number(circle.getAttribute("cy")) || 0) - minY));
-      circle.setAttribute("class", "tree-drag-preview-node-circle");
+    clone.querySelectorAll(".tree-node-hidden-badge").forEach((badge) => badge.remove());
+    clone.querySelectorAll(".tree-node-circle").forEach((shape) => {
+      shape.setAttribute("cx", String((Number(shape.getAttribute("cx")) || 0) - minX));
+      shape.setAttribute("cy", String((Number(shape.getAttribute("cy")) || 0) - minY));
+      shape.setAttribute("class", "tree-drag-preview-node-circle");
+    });
+    clone.querySelectorAll(".tree-node-box").forEach((rect) => {
+      rect.setAttribute("x", String((Number(rect.getAttribute("x")) || 0) - minX));
+      rect.setAttribute("y", String((Number(rect.getAttribute("y")) || 0) - minY));
+      rect.setAttribute("class", "tree-drag-preview-node-circle");
     });
     clone.querySelectorAll("text").forEach((label) => {
       label.setAttribute("x", String((Number(label.getAttribute("x")) || 0) - minX));
       label.setAttribute("y", String((Number(label.getAttribute("y")) || 0) - minY));
+      label.querySelectorAll("tspan").forEach((tspan) => {
+        tspan.setAttribute("x", String((Number(tspan.getAttribute("x")) || 0) - minX));
+      });
       label.setAttribute("class", "tree-drag-preview-node-label");
       label.style.pointerEvents = "none";
     });
@@ -459,9 +506,16 @@ function createGraphTreeDragPreview(nodeId) {
 
   preview.appendChild(svg);
   document.body.appendChild(preview);
-  if (sourceCircle) {
-    preview.dataset.anchorX = String((Number(sourceCircle.getAttribute("cx")) || 0) - minX);
-    preview.dataset.anchorY = String((Number(sourceCircle.getAttribute("cy")) || 0) - minY);
+  if (sourceShape) {
+    const isBox = sourceShape.tagName.toLowerCase() === "rect";
+    const anchorX = isBox
+      ? (Number(sourceShape.getAttribute("x")) || 0) + (Number(sourceShape.getAttribute("width")) || 0) / 2
+      : Number(sourceShape.getAttribute("cx")) || 0;
+    const anchorY = isBox
+      ? (Number(sourceShape.getAttribute("y")) || 0) + (Number(sourceShape.getAttribute("height")) || 0) / 2
+      : Number(sourceShape.getAttribute("cy")) || 0;
+    preview.dataset.anchorX = String(anchorX - minX);
+    preview.dataset.anchorY = String(anchorY - minY);
   }
   return preview;
 }
@@ -578,6 +632,7 @@ function setTreeViewMode(mode) {
   if (mode !== "list" && mode !== "graph") {
     return;
   }
+  clearPendingGraphNodeClick();
   state.treeViewMode = mode;
   renderTree();
 }
@@ -678,6 +733,8 @@ async function bootstrapChatRooms() {
       state.nodes = [];
       state.treeNodes = [];
       state.selectedNodeId = null;
+      state.collapsedGraphNodeIds.clear();
+      state.graphNodeSizeById.clear();
       state.treeBuildStatus = "completed";
       state.treeProcessingWatcherToken++;
       return;
@@ -703,12 +760,14 @@ async function bootstrapChatRooms() {
     await loadRoomHistory(state.currentRoomId);
   } catch (error) {
     state.currentRoomId = null;
-    state.nodes = [];
-    state.treeNodes = [];
-    clearPendingTreeMutations();
-    clearInsightRelatedCaches();
+      state.nodes = [];
+      state.treeNodes = [];
+      clearPendingTreeMutations();
+      clearInsightRelatedCaches();
     state.selectedNodeId = null;
-    state.treeBuildStatus = "completed";
+    state.collapsedGraphNodeIds.clear();
+    state.graphNodeSizeById.clear();
+      state.treeBuildStatus = "completed";
     state.treeProcessingWatcherToken++;
     setAuthMessage(toUiError(error), "error");
   }
@@ -830,6 +889,8 @@ async function onApplyDeleteSelectedRooms() {
       state.treeNodes = [];
       clearPendingTreeMutations();
       state.selectedNodeId = null;
+      state.collapsedGraphNodeIds.clear();
+      state.graphNodeSizeById.clear();
       state.treeBuildStatus = "completed";
       state.treeProcessingWatcherToken++;
     }
@@ -865,6 +926,8 @@ async function createRoomWithFallbackTitle() {
 }
 
 async function loadRoomHistory(roomId) {
+  state.collapsedGraphNodeIds.clear();
+  state.graphNodeSizeById.clear();
   return loadRoomHistoryWithOptions(roomId, {});
 }
 
@@ -1170,6 +1233,11 @@ function applyAssistantResponseToTempNode({
   if (state.selectedNodeId === tempId) {
     state.selectedNodeId = persistedId;
   }
+  if (persistedId !== tempId) {
+    transferGraphNodeUiState(tempId, persistedId);
+  }
+  expandCollapsedAncestorsForNode(persistedId, state.nodes);
+  expandCollapsedAncestorsForNode(persistedId, state.treeNodes);
   transferRouteNoticeNodeId(tempId, persistedId);
   transferBranchNoticeNodeId(tempId, persistedId);
   return persistedId;
@@ -1247,6 +1315,7 @@ async function onSendMessage(event) {
       state.treeBuildStatus = "processing";
     }
     state.selectedNodeId = tempId;
+    expandCollapsedAncestorsForNode(tempId, state.nodes);
     if (isCurrentRoomLocal()) {
       state.treeNodes = state.nodes.map(cloneNode);
       persistCurrentLocalConversationState();
@@ -1295,6 +1364,8 @@ async function onSendMessage(event) {
     const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: true });
     if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
       state.selectedNodeId = persistedNodeId;
+      expandCollapsedAncestorsForNode(persistedNodeId, state.nodes);
+      expandCollapsedAncestorsForNode(persistedNodeId, state.treeNodes);
       detectPlacementChangeNotice(persistedNodeId);
     }
     render();
@@ -1614,9 +1685,15 @@ function renderTree() {
   if (el.graphZoomLevel) {
     el.graphZoomLevel.textContent = `${Math.round(state.graphZoom * 100)}%`;
   }
+  el.graphCircleShapeBtn?.classList.toggle("active", state.graphNodeShape === "circle");
+  el.graphBoxShapeBtn?.classList.toggle("active", state.graphNodeShape === "box");
+  el.graphResizeModeBtn?.classList.toggle("active", state.graphResizeMode);
   renderTreeBuildStatus();
 
   const treeNodes = getRenderableTreeNodes();
+  if (state.treeViewMode === "graph") {
+    expandCollapsedAncestorsForNode(state.selectedNodeId, treeNodes);
+  }
 
   if (treeNodes.length === 0) {
     const empty = document.createElement("p");
@@ -1657,12 +1734,14 @@ function renderTreeList(nodes = state.nodes) {
 }
 
 function renderTreeGraph(nodes = state.nodes) {
-  const graph = getTreeGraphLayout(nodes);
+  const options = getGraphRenderOptions();
+  expandCollapsedAncestorsForNode(state.selectedNodeId, state.nodes);
+  expandCollapsedAncestorsForNode(state.selectedNodeId, state.treeNodes);
+  const graphNodes = getVisibleGraphNodes(nodes);
+  const hiddenCountMap = getCollapsedHiddenCountMap(nodes);
+  const graph = getTreeGraphLayout(graphNodes, options, hiddenCountMap);
   const svgNS = "http://www.w3.org/2000/svg";
   const treeTooltip = getOrCreateTreeTooltip();
-  const baseNodeRadius = 20;
-  const hoverNodeRadius = 23;
-  const selectedHoverNodeRadius = 25;
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "tree-graph-svg");
   svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
@@ -1687,50 +1766,74 @@ function renderTreeGraph(nodes = state.nodes) {
     nodeGroup.setAttribute("class", buildGraphNodeGroupClass(node.id));
     nodeGroup.dataset.nodeId = String(node.id);
 
-    const circle = document.createElementNS(svgNS, "circle");
-    circle.setAttribute("cx", String(node.x));
-    circle.setAttribute("cy", String(node.y));
-    circle.setAttribute("r", String(baseNodeRadius));
-    circle.setAttribute("class", node.id === state.selectedNodeId ? "tree-node-circle active" : "tree-node-circle");
+    const shape = state.graphNodeShape === "box"
+      ? document.createElementNS(svgNS, "rect")
+      : document.createElementNS(svgNS, "ellipse");
+    if (state.graphNodeShape === "box") {
+      shape.setAttribute("x", String(node.x - node.width / 2));
+      shape.setAttribute("y", String(node.y - node.height / 2));
+      shape.setAttribute("width", String(node.width));
+      shape.setAttribute("height", String(node.height));
+      shape.setAttribute("rx", String(options.cornerRadius));
+      shape.setAttribute("ry", String(options.cornerRadius));
+    } else {
+      shape.setAttribute("cx", String(node.x));
+      shape.setAttribute("cy", String(node.y));
+      shape.setAttribute("rx", String(node.rx));
+      shape.setAttribute("ry", String(node.ry));
+    }
+    const shapeClass = state.graphNodeShape === "box" ? "tree-node-box" : "tree-node-circle";
+    shape.setAttribute("class", node.id === state.selectedNodeId ? `${shapeClass} active` : shapeClass);
     const emphasizeNode = () => {
-      circle.classList.add("hovered");
-      circle.setAttribute("r", String(node.id === state.selectedNodeId ? selectedHoverNodeRadius : hoverNodeRadius));
+      shape.classList.add("hovered");
+      if (state.graphNodeShape === "circle") {
+        const grow = node.id === state.selectedNodeId ? 5 : 3;
+        shape.setAttribute("rx", String(node.rx + grow));
+        shape.setAttribute("ry", String(node.ry + grow));
+      }
     };
     const normalizeNode = () => {
-      circle.classList.remove("hovered");
-      circle.setAttribute("r", String(baseNodeRadius));
+      shape.classList.remove("hovered");
+      if (state.graphNodeShape === "circle") {
+        shape.setAttribute("rx", String(node.rx));
+        shape.setAttribute("ry", String(node.ry));
+      }
     };
     attachGraphDragHandlers(nodeGroup, node.id);
-    circle.addEventListener("click", () => {
-      if (!state.dragState.active) {
-        selectNode(node.id);
-      }
-    });
-    circle.addEventListener("mouseenter", (event) => {
+    nodeGroup.addEventListener("pointerdown", (event) => handleGraphNodePointerDown(event, node.id, nodes), { capture: true });
+    shape.addEventListener("click", (event) => queueGraphNodeClickSelect(node.id, event));
+    shape.addEventListener("mouseenter", (event) => {
       emphasizeNode();
       handleTreeDragHover(node.id);
       showTreeTooltip(treeTooltip, node.title, event);
     });
-    circle.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
-    circle.addEventListener("mouseleave", () => {
+    shape.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
+    shape.addEventListener("mouseleave", () => {
       normalizeNode();
       handleTreeDragHover(null);
       hideTreeTooltip(treeTooltip);
     });
-    nodeGroup.appendChild(circle);
+    nodeGroup.appendChild(shape);
 
     const label = document.createElementNS(svgNS, "text");
     label.setAttribute("x", String(node.x));
-    label.setAttribute("y", String(node.y + 5));
+    label.setAttribute("y", String(getGraphLabelStartY(node, options)));
     label.setAttribute("class", "tree-node-label");
-    label.textContent = node.title.length > 6 ? `${node.title.slice(0, 6)}...` : node.title;
+    label.style.fontSize = `${node.fontSize || options.fontSize}px`;
+    if (state.graphNodeShape === "box") {
+      node.lines.forEach((line, index) => {
+        const tspan = document.createElementNS(svgNS, "tspan");
+        tspan.setAttribute("x", String(node.x));
+        tspan.setAttribute("dy", index === 0 ? "0" : String(node.lineHeight || options.lineHeight));
+        tspan.textContent = line;
+        label.appendChild(tspan);
+      });
+    } else {
+      label.textContent = getCircleNodeTitle(node.title, options.circleLabelLength);
+    }
     label.style.pointerEvents = "auto";
     label.style.cursor = "pointer";
-    label.addEventListener("click", () => {
-      if (!state.dragState.active) {
-        selectNode(node.id);
-      }
-    });
+    label.addEventListener("click", (event) => queueGraphNodeClickSelect(node.id, event));
     label.addEventListener("mouseenter", (event) => {
       emphasizeNode();
       handleTreeDragHover(node.id);
@@ -1743,6 +1846,40 @@ function renderTreeGraph(nodes = state.nodes) {
       hideTreeTooltip(treeTooltip);
     });
     nodeGroup.appendChild(label);
+
+    if (node.hiddenCount > 0) {
+      const badge = document.createElementNS(svgNS, "g");
+      badge.setAttribute("class", "tree-node-hidden-badge");
+      badge.setAttribute("transform", `translate(${node.x + node.width / 2 - 7}, ${node.y - node.height / 2 + 7})`);
+
+      const badgeCircle = document.createElementNS(svgNS, "circle");
+      badgeCircle.setAttribute("r", "11");
+      badgeCircle.setAttribute("class", "tree-node-hidden-badge-bg");
+
+      const badgeLabel = document.createElementNS(svgNS, "text");
+      badgeLabel.setAttribute("class", "tree-node-hidden-badge-label");
+      badgeLabel.setAttribute("y", "4");
+      badgeLabel.textContent = `+${node.hiddenCount}`;
+
+      badge.appendChild(badgeCircle);
+      badge.appendChild(badgeLabel);
+      nodeGroup.appendChild(badge);
+    }
+    if (state.graphResizeMode && String(node.id) === String(state.selectedNodeId)) {
+      [
+        { mode: "width", x: node.x + node.width / 2, y: node.y, className: " horizontal" },
+        { mode: "height", x: node.x, y: node.y + node.height / 2, className: " vertical" },
+        { mode: "both", x: node.x + node.width / 2, y: node.y + node.height / 2, className: " corner" }
+      ].forEach((handleConfig) => {
+        const handle = document.createElementNS(svgNS, "circle");
+        handle.setAttribute("cx", String(handleConfig.x));
+        handle.setAttribute("cy", String(handleConfig.y));
+        handle.setAttribute("r", "4.5");
+        handle.setAttribute("class", `tree-node-resize-handle${handleConfig.className}`);
+        handle.addEventListener("pointerdown", (event) => startGraphNodeResize(event, node, handleConfig.mode));
+        nodeGroup.appendChild(handle);
+      });
+    }
     svg.appendChild(nodeGroup);
   });
 
@@ -1790,6 +1927,104 @@ function hideTreeTooltip(tooltip) {
     return;
   }
   tooltip.classList.add("hidden");
+}
+
+function clearPendingGraphNodeClick() {
+  if (graphNodeClickTimer) {
+    clearTimeout(graphNodeClickTimer);
+    graphNodeClickTimer = null;
+  }
+}
+
+function queueGraphNodeClickSelect(nodeId, event) {
+  if (state.dragState.active || event?.detail > 1) {
+    return;
+  }
+
+  clearPendingGraphNodeClick();
+  graphNodeClickTimer = setTimeout(() => {
+    graphNodeClickTimer = null;
+    if (!state.dragState.active && state.treeViewMode === "graph") {
+      selectNode(nodeId);
+    }
+  }, 340);
+}
+
+function startGraphNodeResize(event, node, mode = "both") {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  clearPendingGraphNodeClick();
+
+  const nodeId = String(node.id);
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startSize = getGraphNodeSize(nodeId);
+  const startWidth = Math.max(Number(node.width) || 1, 1);
+  const startHeight = Math.max(Number(node.height) || 1, 1);
+
+  const onMove = (moveEvent) => {
+    const deltaX = moveEvent.clientX - startX;
+    const deltaY = moveEvent.clientY - startY;
+    const nextSize = { ...startSize };
+    if (mode === "width" || mode === "both") {
+      nextSize.width = clamp(Number((startSize.width * (1 + deltaX / startWidth)).toFixed(2)), 0.65, 2.4);
+    }
+    if (mode === "height" || mode === "both") {
+      nextSize.height = clamp(Number((startSize.height * (1 + deltaY / startHeight)).toFixed(2)), 0.65, 2.4);
+    }
+    state.graphNodeSizeById.set(getGraphNodeSizeKey(nodeId), nextSize);
+    renderTree();
+  };
+
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+function handleGraphNodePointerDown(event, nodeId, nodes = state.nodes) {
+  if (event.button !== 0) {
+    return;
+  }
+  if (event.target?.classList?.contains("tree-node-resize-handle")) {
+    return;
+  }
+
+  const now = Date.now();
+  const key = String(nodeId);
+  const dx = Math.abs(event.clientX - lastGraphNodePointerDown.x);
+  const dy = Math.abs(event.clientY - lastGraphNodePointerDown.y);
+  const isDoublePointer = (
+    lastGraphNodePointerDown.nodeId === key &&
+    now - lastGraphNodePointerDown.time <= 420 &&
+    dx <= 8 &&
+    dy <= 8
+  );
+
+  if (!isDoublePointer) {
+    lastGraphNodePointerDown = {
+      nodeId: key,
+      time: now,
+      x: event.clientX,
+      y: event.clientY
+    };
+    return;
+  }
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  clearPendingGraphNodeClick();
+  lastGraphNodePointerDown = {
+    nodeId: null,
+    time: 0,
+    x: 0,
+    y: 0
+  };
+  toggleGraphNodeCollapse(key, nodes);
 }
 
 function renderTreeNode(node) {
@@ -1940,10 +2175,114 @@ function canMoveNodeUnderTarget(sourceNodeId, targetNodeId, nodes = state.nodes)
   return true;
 }
 
+function getCollapsedHiddenCountMap(nodes = state.nodes) {
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
+  const countMap = new Map();
+
+  [...state.collapsedGraphNodeIds].forEach((nodeId) => {
+    if (!nodeIds.has(String(nodeId))) {
+      state.collapsedGraphNodeIds.delete(nodeId);
+      return;
+    }
+    const hiddenCount = Math.max(0, collectSubtreeIds(nodeId, nodes).size - 1);
+    if (hiddenCount > 0) {
+      countMap.set(String(nodeId), hiddenCount);
+    } else {
+      state.collapsedGraphNodeIds.delete(nodeId);
+    }
+  });
+
+  return countMap;
+}
+
+function getVisibleGraphNodes(nodes = state.nodes) {
+  if (!state.collapsedGraphNodeIds.size) {
+    return nodes;
+  }
+
+  const hiddenIds = new Set();
+  state.collapsedGraphNodeIds.forEach((nodeId) => {
+    collectSubtreeIds(nodeId, nodes).forEach((subtreeId) => {
+      if (String(subtreeId) !== String(nodeId)) {
+        hiddenIds.add(String(subtreeId));
+      }
+    });
+  });
+
+  return nodes.filter((node) => !hiddenIds.has(String(node.id)));
+}
+
+function toggleGraphNodeCollapse(nodeId, nodes = state.nodes) {
+  if (state.dragState.active) {
+    return;
+  }
+
+  const key = String(nodeId);
+  const subtreeIds = collectSubtreeIds(key, nodes);
+  if (subtreeIds.size <= 1) {
+    return;
+  }
+
+  if (state.collapsedGraphNodeIds.has(key)) {
+    state.collapsedGraphNodeIds.delete(key);
+  } else {
+    state.collapsedGraphNodeIds.add(key);
+    if (state.selectedNodeId && subtreeIds.has(String(state.selectedNodeId)) && String(state.selectedNodeId) !== key) {
+      state.selectedNodeId = key;
+    }
+  }
+  render();
+}
+
+function expandCollapsedAncestorsForNode(nodeId, nodes = state.nodes) {
+  if (!nodeId || !state.collapsedGraphNodeIds.size) {
+    return false;
+  }
+
+  const nodeMap = new Map(nodes.map((node) => [String(node.id), node]));
+  let cursor = nodeMap.get(String(nodeId));
+  let expanded = false;
+
+  while (cursor?.parentId != null) {
+    const parentId = String(cursor.parentId);
+    if (state.collapsedGraphNodeIds.delete(parentId)) {
+      expanded = true;
+    }
+    cursor = nodeMap.get(parentId);
+  }
+
+  return expanded;
+}
+
+function transferGraphNodeUiState(fromNodeId, toNodeId) {
+  const fromKey = String(fromNodeId);
+  const toKey = String(toNodeId);
+  ["circle", "box"].forEach((shape) => {
+    const fromSizeKey = getGraphNodeSizeKey(fromKey, shape);
+    const toSizeKey = getGraphNodeSizeKey(toKey, shape);
+    if (state.graphNodeSizeById.has(fromSizeKey)) {
+      state.graphNodeSizeById.set(toSizeKey, state.graphNodeSizeById.get(fromSizeKey));
+      state.graphNodeSizeById.delete(fromSizeKey);
+    }
+  });
+  if (state.collapsedGraphNodeIds.delete(fromKey)) {
+    state.collapsedGraphNodeIds.add(toKey);
+  }
+}
+
+function deleteGraphNodeSizeState(nodeId) {
+  ["circle", "box"].forEach((shape) => {
+    state.graphNodeSizeById.delete(getGraphNodeSizeKey(nodeId, shape));
+  });
+}
+
 function applyTreeMutationLocally(mutation) {
   if (!mutation?.type) {
     return false;
   }
+  const collapsedIdsToClear = mutation.type === "delete_subtree"
+    ? collectSubtreeIds(mutation.nodeId, getTreeSourceNodes())
+    : new Set();
 
   if (isCurrentRoomLocal()) {
     let localNextNodes = state.nodes.map(cloneNode);
@@ -1971,6 +2310,10 @@ function applyTreeMutationLocally(mutation) {
       if (!selectedStillExists) {
         state.selectedNodeId = mutation.fallbackSelectedNodeId || null;
       }
+      collapsedIdsToClear.forEach((nodeId) => {
+        state.collapsedGraphNodeIds.delete(String(nodeId));
+        deleteGraphNodeSizeState(nodeId);
+      });
     }
     persistCurrentLocalConversationState();
     render();
@@ -1987,6 +2330,10 @@ function applyTreeMutationLocally(mutation) {
     if (!selectedStillExists) {
       state.selectedNodeId = mutation.fallbackSelectedNodeId || null;
     }
+    collapsedIdsToClear.forEach((nodeId) => {
+      state.collapsedGraphNodeIds.delete(String(nodeId));
+      deleteGraphNodeSizeState(nodeId);
+    });
   }
 
   render();
@@ -2126,7 +2473,10 @@ function attachGraphDragHandlers(element, nodeId) {
     if (!canDragTreeNode(nodeId) || event.button !== 0) {
       return;
     }
-    event.preventDefault();
+    if (event.detail > 1) {
+      clearPendingGraphNodeClick();
+      return;
+    }
     const startX = event.clientX;
     const startY = event.clientY;
     let dragging = false;
@@ -2140,6 +2490,8 @@ function attachGraphDragHandlers(element, nodeId) {
       if (dx < 6 && dy < 6) {
         return;
       }
+      moveEvent.preventDefault();
+      clearPendingGraphNodeClick();
       dragging = true;
       state.dragState = {
         sourceNodeId: String(nodeId),
@@ -2174,7 +2526,6 @@ function attachGraphDragHandlers(element, nodeId) {
       window.removeEventListener("pointermove", onDragMove);
       window.removeEventListener("pointerup", onUp);
       if (!dragging) {
-        selectNode(nodeId);
         return;
       }
       const sourceNodeId = state.dragState.sourceNodeId;
@@ -2319,10 +2670,10 @@ function renderChat() {
   const pathNodes = state.selectedNodeId ? getPathToNode(state.selectedNodeId) : [];
   let selectedBubble = null;
   pathNodes.forEach((node) => {
-    if (isAutoSubtopicSeedNode(node)) {
+    const isSelected = String(node.id) === String(state.selectedNodeId);
+    if (isAutoSubtopicSeedNode(node) && !isSelected) {
       return;
     }
-    const isSelected = node.id === state.selectedNodeId;
     const userBubble = makeBubble("user", node.userQuestion, node.timestamp, node.id, isSelected);
     const aiBubble = makeBubble("ai", node.aiAnswer, node.timestamp + 1000, node.id, isSelected);
     el.chatFeed.appendChild(userBubble);
@@ -2696,6 +3047,7 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
     });
   }
   state.selectedNodeId = tempId;
+  expandCollapsedAncestorsForNode(tempId, state.nodes);
 
   if (isCurrentRoomLocal()) {
     state.treeNodes = state.nodes.map(cloneNode);
@@ -2732,6 +3084,8 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
     const applied = await loadRoomHistoryWithOptions(state.currentRoomId, { keepTreeWhileProcessing: false });
     if (applied && persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
       state.selectedNodeId = persistedNodeId;
+      expandCollapsedAncestorsForNode(persistedNodeId, state.nodes);
+      expandCollapsedAncestorsForNode(persistedNodeId, state.treeNodes);
     }
     render();
     return persistedNodeId;
@@ -3183,7 +3537,7 @@ function getRouteFocusMetrics(node) {
     focusDepth,
     depthLead,
     score,
-    shouldNotify: focusDepth >= 4 || (focusDepth >= 3 && depthLead >= 3),
+    shouldNotify: focusDepth >= 5 || (focusDepth >= 4 && depthLead >= 3),
     branchAnchorTitle: path[branchAnchorIndex]?.title || "현재 주제"
   };
 }
@@ -3541,6 +3895,8 @@ function loadLocalConversationRoom(roomId) {
   state.nodes = room.nodes.map(cloneNode);
   state.treeNodes = room.treeNodes.map(cloneNode);
   state.selectedNodeId = room.selectedNodeId;
+  state.collapsedGraphNodeIds.clear();
+  state.graphNodeSizeById.clear();
   state.treeBuildStatus = "completed";
   state.treeProcessingWatcherToken++;
   return true;
@@ -4082,6 +4438,25 @@ function resetGraphZoom() {
   renderTree();
 }
 
+function setGraphNodeShape(shape) {
+  if (state.treeViewMode !== "graph") {
+    return;
+  }
+  if (shape !== "circle" && shape !== "box") {
+    return;
+  }
+  state.graphNodeShape = shape;
+  renderTree();
+}
+
+function toggleGraphResizeMode() {
+  if (state.treeViewMode !== "graph") {
+    return;
+  }
+  state.graphResizeMode = !state.graphResizeMode;
+  renderTree();
+}
+
 function isAutoGeneratedRoomTitle(title) {
   const value = String(title || "").trim();
   if (!value) {
@@ -4134,42 +4509,214 @@ function compareTreeNodeOrder(left, right) {
   return String(left?.id || "").localeCompare(String(right?.id || ""));
 }
 
-function getTreeGraphLayout(nodes) {
-  const tree = buildTree(nodes);
-  const roots = tree.filter((node) => node.parentId === null);
-  const xGap = 96;
-  const yGap = 98;
-  const margin = 30;
-  let cursorX = 0;
+function getGraphRenderOptions() {
+  const scale = clamp(Number(state.graphNodeSizeScale) || 1, 0.8, 1.5);
+  const isBox = state.graphNodeShape === "box";
+  return {
+    shape: isBox ? "box" : "circle",
+    scale,
+    radius: Math.round(30 * scale),
+    circleLabelLength: Math.max(7, Math.floor(9 * scale)),
+    minBoxWidth: Math.round(96 * scale),
+    maxCharsPerLine: Math.max(8, Math.floor(13 * scale)),
+    horizontalPadding: Math.round(18 * scale),
+    verticalPadding: Math.round(12 * scale),
+    lineHeight: Math.round(17 * scale),
+    fontSize: Math.round((isBox ? 12 : 13) * scale),
+    cornerRadius: Math.round(12 * scale)
+  };
+}
 
-  function assign(node, depth, placed) {
-    if (node.children.length === 0) {
-      const x = cursorX;
-      cursorX += 1;
-      const p = { id: node.id, title: node.title, depth, x };
-      placed.push(p);
-      return p;
-    }
+function getGraphNodeSizeKey(nodeId, shape = state.graphNodeShape) {
+  return `${shape}:${String(nodeId)}`;
+}
 
-    const childPlaced = node.children.map((child) => assign(child, depth + 1, placed));
-    const avgX = childPlaced.reduce((sum, child) => sum + child.x, 0) / childPlaced.length;
-    const p = { id: node.id, title: node.title, depth, x: avgX };
-    placed.push(p);
-    return p;
+function getGraphNodeSize(nodeId) {
+  const stored = state.graphNodeSizeById.get(getGraphNodeSizeKey(nodeId));
+  if (typeof stored === "number") {
+    const scale = clamp(stored, 0.65, 2.4);
+    return { width: scale, height: scale };
+  }
+  return {
+    width: clamp(Number(stored?.width) || 1, 0.65, 2.4),
+    height: clamp(Number(stored?.height) || 1, 0.65, 2.4)
+  };
+}
+
+function getCircleNodeTitle(title, maxLength) {
+  const clean = String(title || "제목 없음").trim();
+  return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean;
+}
+
+function getGraphDisplayTitle(node) {
+  const title = String(node?.title || "제목 없음").trim();
+  if (node?.parentId != null) {
+    return title;
+  }
+  return extractRootTopicTitle(title) || title;
+}
+
+function extractRootTopicTitle(title) {
+  const clean = String(title || "").replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "";
   }
 
+  const explicitMatch = clean.match(/^대주제(?:는|:)?\s*(.+?)(?:이고|이며|입니다|,|\.|$)/);
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].trim();
+  }
+
+  const subtopicMatch = clean.match(/^(.+?)(?:이고|이며|,)?\s*소주제(?:는|:)/);
+  if (subtopicMatch?.[1]) {
+    return subtopicMatch[1].trim();
+  }
+
+  return clean;
+}
+
+function wrapGraphTitle(title, maxCharsPerLine) {
+  const clean = String(title || "제목 없음").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxCharsPerLine) {
+    return [clean];
+  }
+
+  const lines = [];
+  let current = "";
+  clean.split(" ").forEach((word) => {
+    if (!current) {
+      current = word;
+      return;
+    }
+    if ((current + word).length + 1 <= maxCharsPerLine) {
+      current += ` ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  });
+  if (current) {
+    lines.push(current);
+  }
+
+  const normalized = [];
+  lines.forEach((line) => {
+    if (line.length <= maxCharsPerLine) {
+      normalized.push(line);
+      return;
+    }
+    for (let index = 0; index < line.length; index += maxCharsPerLine) {
+      normalized.push(line.slice(index, index + maxCharsPerLine));
+    }
+  });
+  return normalized;
+}
+
+function measureGraphNode(nodeId, title, options) {
+  const nodeSize = getGraphNodeSize(nodeId);
+  const averageScale = (nodeSize.width + nodeSize.height) / 2;
+  if (options.shape === "circle") {
+    const rx = Math.round(options.radius * nodeSize.width);
+    const ry = Math.round(options.radius * nodeSize.height);
+    return {
+      width: rx * 2,
+      height: ry * 2,
+      rx,
+      ry,
+      radius: Math.max(rx, ry),
+      fontSize: Math.round(options.fontSize * Math.min(1.45, averageScale)),
+      lineHeight: options.lineHeight,
+      lines: [getCircleNodeTitle(title, options.circleLabelLength)]
+    };
+  }
+
+  const lines = wrapGraphTitle(title, options.maxCharsPerLine);
+  const longestLine = Math.max(...lines.map((line) => line.length), 1);
+  const fontSize = Math.round(options.fontSize * Math.min(1.35, averageScale));
+  const baseWidth = Math.max(options.minBoxWidth, Math.round(longestLine * options.fontSize * 0.72) + options.horizontalPadding * 2);
+  const baseHeight = lines.length * options.lineHeight + options.verticalPadding * 2;
+  return {
+    width: Math.round(baseWidth * nodeSize.width),
+    height: Math.round(baseHeight * nodeSize.height),
+    rx: 0,
+    ry: 0,
+    radius: 0,
+    fontSize,
+    lineHeight: Math.round(options.lineHeight * nodeSize.height),
+    lines
+  };
+}
+
+function getGraphLabelStartY(node, options) {
+  if (options.shape === "circle") {
+    return node.y + Math.round(options.fontSize * 0.36);
+  }
+  const lineHeight = node.lineHeight || options.lineHeight;
+  return node.y - ((node.lines.length - 1) * lineHeight) / 2 + Math.round((node.fontSize || options.fontSize) * 0.36);
+}
+
+function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCountMap = new Map()) {
+  const tree = buildTree(nodes);
+  const roots = tree.filter((node) => node.parentId === null);
+  const xGap = Math.round((options.shape === "box" ? 34 : 44) * options.scale);
+  const yGap = Math.round((options.shape === "box" ? 84 : 98) * options.scale);
+  const margin = Math.round((options.shape === "box" ? 42 : 34) * options.scale);
   const placed = [];
-  roots.forEach((root) => {
-    assign(root, 0, placed);
-    cursorX += 1;
+
+  function measureSubtree(node, depth) {
+    const displayTitle = getGraphDisplayTitle(node);
+    const metrics = measureGraphNode(node.id, displayTitle, options);
+    const childLayouts = node.children.map((child) => measureSubtree(child, depth + 1));
+    const childrenWidth = childLayouts.reduce((sum, child) => sum + child.subtreeWidth, 0)
+      + Math.max(0, childLayouts.length - 1) * xGap;
+    return {
+      ...node,
+      title: displayTitle,
+      hiddenCount: hiddenCountMap.get(String(node.id)) || 0,
+      ...metrics,
+      depth,
+      childLayouts,
+      subtreeWidth: Math.max(metrics.width, childrenWidth)
+    };
+  }
+
+  function placeSubtree(layout, left) {
+    const x = left + layout.subtreeWidth / 2;
+    const y = margin + layout.depth * yGap;
+    placed.push({
+      id: layout.id,
+      title: layout.title,
+      depth: layout.depth,
+      x,
+      y,
+      width: layout.width,
+      height: layout.height,
+      rx: layout.rx,
+      ry: layout.ry,
+      radius: layout.radius,
+      fontSize: layout.fontSize,
+      lineHeight: layout.lineHeight,
+      lines: layout.lines,
+      hiddenCount: layout.hiddenCount
+    });
+
+    const childrenWidth = layout.childLayouts.reduce((sum, child) => sum + child.subtreeWidth, 0)
+      + Math.max(0, layout.childLayouts.length - 1) * xGap;
+    let childLeft = left + (layout.subtreeWidth - childrenWidth) / 2;
+    layout.childLayouts.forEach((child) => {
+      placeSubtree(child, childLeft);
+      childLeft += child.subtreeWidth + xGap;
+    });
+  }
+
+  let cursorX = margin;
+  roots.map((root) => measureSubtree(root, 0)).forEach((rootLayout) => {
+    placeSubtree(rootLayout, cursorX);
+    cursorX += rootLayout.subtreeWidth + xGap;
   });
 
   const maxDepth = Math.max(...placed.map((p) => p.depth), 0);
-  const graphNodes = placed.map((p) => ({
-    ...p,
-    x: margin + p.x * xGap,
-    y: margin + p.depth * yGap
-  }));
+  const graphNodes = placed;
 
   const graphNodeMap = new Map(graphNodes.map((p) => [p.id, p]));
   const links = [];
@@ -4186,36 +4733,40 @@ function getTreeGraphLayout(nodes) {
           sourceId: parent.id,
           targetId: target.id,
           x1: parent.x,
-          y1: parent.y + 18,
+          y1: parent.y + parent.height / 2,
           x2: target.x,
-          y2: target.y - 18
+          y2: target.y - target.height / 2
         });
       }
     });
   });
 
-  const maxX = Math.max(...graphNodes.map((p) => p.x), margin);
-  const minX = Math.min(...graphNodes.map((p) => p.x), margin);
+  const maxX = Math.max(...graphNodes.map((p) => p.x + p.width / 2), margin);
+  const minX = Math.min(...graphNodes.map((p) => p.x - p.width / 2), margin);
+  const maxY = Math.max(...graphNodes.map((p) => p.y + p.height / 2), margin);
+  const minY = Math.min(...graphNodes.map((p) => p.y - p.height / 2), margin);
   const contentWidth = maxX - minX;
   const minCanvasWidth = 320;
-  const width = Math.max(minCanvasWidth, maxX + margin);
-  const shiftX = (width - (contentWidth + margin * 2)) / 2;
+  const width = Math.max(minCanvasWidth, contentWidth + margin * 2);
+  const shiftX = margin - minX + (width - (contentWidth + margin * 2)) / 2;
+  const shiftY = margin - minY;
 
-  if (shiftX > 0) {
-    graphNodes.forEach((node) => {
-      node.x += shiftX;
-    });
-    links.forEach((link) => {
-      link.x1 += shiftX;
-      link.x2 += shiftX;
-    });
-  }
+  graphNodes.forEach((node) => {
+    node.x += shiftX;
+    node.y += shiftY;
+  });
+  links.forEach((link) => {
+    link.x1 += shiftX;
+    link.x2 += shiftX;
+    link.y1 += shiftY;
+    link.y2 += shiftY;
+  });
 
   return {
     nodes: graphNodes,
     links,
     width,
-    height: margin * 2 + maxDepth * yGap + 36
+    height: Math.max(220, maxY - minY + margin * 2, margin * 2 + maxDepth * yGap + 36)
   };
 }
 

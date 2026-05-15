@@ -706,6 +706,35 @@ input:focus {
   color: #89ffd8;
 }
 
+.graph-shape-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(12, 29, 39, 0.72);
+}
+
+.shape-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.18rem 0.44rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.shape-btn.active {
+  color: #062129;
+  background: linear-gradient(140deg, #63d5be, #6ab4d4);
+}
+
+.graph-resize-mode-btn.active {
+  color: #062129;
+  background: linear-gradient(140deg, #63d5be, #6ab4d4);
+  font-weight: 800;
+}
+
 .mode-toggle {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -901,7 +930,8 @@ input:focus {
   stroke-width: 1.6;
 }
 
-.tree-node-circle {
+.tree-node-circle,
+.tree-node-box {
   fill: rgba(70, 155, 210, 0.25);
   stroke: rgba(148, 218, 245, 0.72);
   stroke-width: 1.2;
@@ -909,25 +939,29 @@ input:focus {
   transition: r 0.14s ease, stroke-width 0.14s ease, fill 0.14s ease, filter 0.14s ease;
 }
 
-.tree-node-circle.active {
+.tree-node-circle.active,
+.tree-node-box.active {
   fill: rgba(92, 210, 177, 0.32);
   stroke: rgba(157, 255, 226, 0.98);
   stroke-width: 1.8;
 }
 
-.tree-node-circle.hovered {
+.tree-node-circle.hovered,
+.tree-node-box.hovered {
   fill: rgba(101, 192, 238, 0.36);
   stroke-width: 2.3;
   filter: drop-shadow(0 0 6px rgba(109, 200, 244, 0.45));
 }
 
-.tree-node-group.drag-source .tree-node-circle {
+.tree-node-group.drag-source .tree-node-circle,
+.tree-node-group.drag-source .tree-node-box {
   opacity: 0.72;
   stroke: rgba(247, 209, 106, 0.88);
   stroke-width: 2.2;
 }
 
-.tree-node-group.drag-subtree .tree-node-circle {
+.tree-node-group.drag-subtree .tree-node-circle,
+.tree-node-group.drag-subtree .tree-node-box {
   opacity: 0.42;
   filter: blur(0.6px);
 }
@@ -936,13 +970,15 @@ input:focus {
   opacity: 0.45;
 }
 
-.tree-node-group.drop-target .tree-node-circle {
+.tree-node-group.drop-target .tree-node-circle,
+.tree-node-group.drop-target .tree-node-box {
   fill: rgba(92, 210, 177, 0.26);
   stroke: rgba(157, 255, 226, 0.98);
   stroke-width: 2.5;
 }
 
-.tree-node-group.invalid-target .tree-node-circle {
+.tree-node-group.invalid-target .tree-node-circle,
+.tree-node-group.invalid-target .tree-node-box {
   fill: rgba(255, 141, 122, 0.18);
   stroke: rgba(255, 141, 122, 0.92);
   stroke-width: 2.4;
@@ -955,6 +991,44 @@ input:focus {
   pointer-events: none;
   font-weight: 700;
   user-select: none;
+}
+
+.tree-node-hidden-badge {
+  pointer-events: none;
+}
+
+.tree-node-hidden-badge-bg {
+  fill: rgba(8, 24, 32, 0.96);
+  stroke: rgba(137, 255, 216, 0.86);
+  stroke-width: 1.2;
+}
+
+.tree-node-hidden-badge-label {
+  fill: #b9ffe8;
+  font-size: 9px;
+  font-weight: 800;
+  text-anchor: middle;
+  user-select: none;
+}
+
+.tree-node-resize-handle {
+  fill: #b9ffe8;
+  stroke: rgba(8, 24, 32, 0.96);
+  stroke-width: 1.6;
+  cursor: nwse-resize;
+  filter: drop-shadow(0 0 5px rgba(137, 255, 216, 0.45));
+}
+
+.tree-node-resize-handle.horizontal {
+  cursor: ew-resize;
+}
+
+.tree-node-resize-handle.vertical {
+  cursor: ns-resize;
+}
+
+.tree-node-resize-handle.corner {
+  cursor: nwse-resize;
 }
 
 .graph-tooltip {
