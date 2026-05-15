@@ -193,6 +193,30 @@ public class ChatController {
         }
     }
     // 대화 재구성 API 추가!
+    @PutMapping("/room/{roomId}/node/{nodeId}/force-placement")
+    public ResponseEntity<?> forceNodePlacement(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long roomId,
+            @PathVariable Long nodeId,
+            @RequestBody ForceNodePlacementRequest request
+    ) {
+        try {
+            chatService.forceNodePlacement(
+                    authorization,
+                    roomId,
+                    nodeId,
+                    request.getParentId(),
+                    request.getNodeTitle()
+            );
+            return ResponseEntity.ok().build();
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("?몃뱶 ?꾩튂 怨좎젙 以??ㅻ쪟媛 諛쒖깮?덉뒿?덈떎: " + e.getMessage());
+        }
+    }
+
     @PostMapping("/room/rebuild")
     public ResponseEntity<Long> rebuildRoom(
             @RequestHeader("Authorization") String authorization,

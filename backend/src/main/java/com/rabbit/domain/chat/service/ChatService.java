@@ -306,7 +306,7 @@ public class ChatService {
                 userSaved.getId(),
                 aiSaved.getId(),
                 forceCreateUnrelated,
-                skipRootTopicGuard
+                false
         );
 
         return ChatResponse.builder()
@@ -2680,6 +2680,51 @@ public class ChatService {
         }
 
         log.info("🚚 노드 이동 완료: {} (User:{}) -> 새 부모: {}", nodeId, sourceUserNode.getId(), newParentId);
+    }
+
+    @Transactional
+    public void forceNodePlacement(String authorization, Long roomId, Long nodeId, Long parentId, String nodeTitle) {
+        validateAuthorization(authorization);
+
+        ChatMessage sourceAiNode = chatMessageRepository.findById(nodeId)
+                .orElseThrow(() -> new IllegalArgumentException("?몃뱶瑜?李얠쓣 ???놁뒿?덈떎."));
+        ChatMessage sourceUserNode = sourceAiNode.getParent();
+        if (sourceUserNode == null || sourceUserNode.getSender() != SenderRole.USER) {
+            throw new IllegalArgumentException("?좎? 吏덈Ц ?몃뱶瑜?李얠쓣 ???놁뒿?덈떎.");
+        }
+
+        Long sourceRoomId = sourceAiNode.getChatRoom() != null ? sourceAiNode.getChatRoom().getId() : null;
+        if (!Objects.equals(sourceRoomId, roomId)) {
+            throw new IllegalArgumentException("?몃뱶媛 ?대떦 ??붾갑???띠븯吏 ?딆뒿?덈떎.");
+        }
+
+        ChatMessage targetAiNode = null;
+        if (parentId != null) {
+            if (Objects.equals(nodeId, parentId) || isDescendant(nodeId, parentId)) {
+                throw new IllegalArgumentException("?먯떊???섏쐞 ?몃뱶濡쒕뒗 ?대룞?????놁뒿?덈떎.");
+            }
+            targetAiNode = chatMessageRepository.findById(parentId)
+                    .orElseThrow(() -> new IllegalArgumentException("遺紐??몃뱶瑜?李얠쓣 ???놁뒿?덈떎."));
+            Long targetRoomId = targetAiNode.getChatRoom() != null ? targetAiNode.getChatRoom().getId() : null;
+            if (!Objects.equals(targetRoomId, roomId)) {
+                throw new IllegalArgumentException("遺紐??몃뱶媛 ?대떦 ??붾갑???띠븯吏 ?딆뒿?덈떎.");
+            }
+        }
+
+        int nextDepth = targetAiNode == null ? 0 : targetAiNode.getDepth() + 1;
+        int depthDiff = nextDepth - sourceUserNode.getDepth();
+        String fallbackTitle = trimToLength(defaultString(sourceUserNode.getContent()).replaceAll("\\s+", " "), 24);
+        String fixedTitle = trimToLength(defaultString(nodeTitle).isBlank() ? fallbackTitle : nodeTitle, 120);
+
+        sourceUserNode.updateTreePlacement(targetAiNode, nextDepth);
+        sourceUserNode.updateTreeMetadata(fixedTitle, sourceUserNode.getLevel1Topic(), sourceUserNode.getLevel2Topic());
+        chatMessageRepository.save(sourceUserNode);
+
+        if (depthDiff != 0) {
+            updateChildrenDepthRecursively(sourceUserNode.getId(), depthDiff);
+        }
+
+        log.info("Forced node placement: nodeId={} parentId={} title={}", nodeId, parentId, fixedTitle);
     }
 
     private void updateChildrenDepthRecursively(Long parentId, int depthDiff) {

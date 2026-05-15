@@ -144,3 +144,14 @@ export function moveNodeApi(roomId, nodeId, newParentId, token = "") {
     token
   );
 }
+
+export function forceNodePlacementApi(roomId, nodeId, parentId, nodeTitle, token = "") {
+  return request(
+    `/api/chat/room/${roomId}/node/${nodeId}/force-placement`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ parentId, nodeTitle })
+    },
+    token
+  );
+}

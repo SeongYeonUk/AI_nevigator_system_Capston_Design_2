@@ -12,7 +12,8 @@ import {
   getRoomsApi,
   updateRoomTitleApi,
   deleteNodeApi,  
-  moveNodeApi     
+  moveNodeApi,
+  forceNodePlacementApi
 } from "./api/chat-api.js";
 import { deleteAccountApi, getProfileApi, updateProfileApi } from "./api/user-api.js";
 import { CHAT_API_MODE } from "./config.js";
@@ -59,6 +60,7 @@ const state = {
   treeProcessingWatcherToken: 0,
   routeNotice: null,
   branchNotice: null,
+  rootTopicNoticeNodeIds: new Set(),
   pendingPlacementChecks: new Map(),
   insightCache: new Map(),
   pendingInsightKeys: new Set(),
@@ -1342,13 +1344,7 @@ async function onSendMessage(event) {
       parentId,
       nextDepth: effectiveNextDepth
     });
-    schedulePostAnswerRootTopicCheck({
-      roomId: effectiveRoomId,
-      parentId,
-      question,
-      nodeId: persistedNodeId,
-      skip: forceCreateUnrelated
-    });
+    maybeHandleAssistantOutOfScopeNotice(response, persistedNodeId, question, parentId);
     rememberPlacementCheck(persistedNodeId, parentId, question);
     if (isCurrentRoomLocal()) {
       state.treeNodes = state.nodes.map(cloneNode);
@@ -1766,10 +1762,10 @@ function renderTreeGraph(nodes = state.nodes) {
     nodeGroup.setAttribute("class", buildGraphNodeGroupClass(node.id));
     nodeGroup.dataset.nodeId = String(node.id);
 
-    const shape = state.graphNodeShape === "box"
+    const shape = node.visualShape === "box"
       ? document.createElementNS(svgNS, "rect")
       : document.createElementNS(svgNS, "ellipse");
-    if (state.graphNodeShape === "box") {
+    if (node.visualShape === "box") {
       shape.setAttribute("x", String(node.x - node.width / 2));
       shape.setAttribute("y", String(node.y - node.height / 2));
       shape.setAttribute("width", String(node.width));
@@ -1782,11 +1778,11 @@ function renderTreeGraph(nodes = state.nodes) {
       shape.setAttribute("rx", String(node.rx));
       shape.setAttribute("ry", String(node.ry));
     }
-    const shapeClass = state.graphNodeShape === "box" ? "tree-node-box" : "tree-node-circle";
+    const shapeClass = node.visualShape === "box" ? "tree-node-box" : "tree-node-circle";
     shape.setAttribute("class", node.id === state.selectedNodeId ? `${shapeClass} active` : shapeClass);
     const emphasizeNode = () => {
       shape.classList.add("hovered");
-      if (state.graphNodeShape === "circle") {
+      if (node.visualShape !== "box") {
         const grow = node.id === state.selectedNodeId ? 5 : 3;
         shape.setAttribute("rx", String(node.rx + grow));
         shape.setAttribute("ry", String(node.ry + grow));
@@ -1794,7 +1790,7 @@ function renderTreeGraph(nodes = state.nodes) {
     };
     const normalizeNode = () => {
       shape.classList.remove("hovered");
-      if (state.graphNodeShape === "circle") {
+      if (node.visualShape !== "box") {
         shape.setAttribute("rx", String(node.rx));
         shape.setAttribute("ry", String(node.ry));
       }
@@ -1815,37 +1811,39 @@ function renderTreeGraph(nodes = state.nodes) {
     });
     nodeGroup.appendChild(shape);
 
-    const label = document.createElementNS(svgNS, "text");
-    label.setAttribute("x", String(node.x));
-    label.setAttribute("y", String(getGraphLabelStartY(node, options)));
-    label.setAttribute("class", "tree-node-label");
-    label.style.fontSize = `${node.fontSize || options.fontSize}px`;
-    if (state.graphNodeShape === "box") {
-      node.lines.forEach((line, index) => {
-        const tspan = document.createElementNS(svgNS, "tspan");
-        tspan.setAttribute("x", String(node.x));
-        tspan.setAttribute("dy", index === 0 ? "0" : String(node.lineHeight || options.lineHeight));
-        tspan.textContent = line;
-        label.appendChild(tspan);
+    if (node.showLabel) {
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", String(node.x));
+      label.setAttribute("y", String(getGraphLabelStartY(node, options)));
+      label.setAttribute("class", "tree-node-label");
+      label.style.fontSize = `${node.fontSize || options.fontSize}px`;
+      if (node.visualShape === "box") {
+        node.lines.forEach((line, index) => {
+          const tspan = document.createElementNS(svgNS, "tspan");
+          tspan.setAttribute("x", String(node.x));
+          tspan.setAttribute("dy", index === 0 ? "0" : String(node.lineHeight || options.lineHeight));
+          tspan.textContent = line;
+          label.appendChild(tspan);
+        });
+      } else {
+        label.textContent = getCircleNodeTitle(node.title, options.circleLabelLength);
+      }
+      label.style.pointerEvents = "auto";
+      label.style.cursor = "pointer";
+      label.addEventListener("click", (event) => queueGraphNodeClickSelect(node.id, event));
+      label.addEventListener("mouseenter", (event) => {
+        emphasizeNode();
+        handleTreeDragHover(node.id);
+        showTreeTooltip(treeTooltip, node.title, event);
       });
-    } else {
-      label.textContent = getCircleNodeTitle(node.title, options.circleLabelLength);
+      label.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
+      label.addEventListener("mouseleave", () => {
+        normalizeNode();
+        handleTreeDragHover(null);
+        hideTreeTooltip(treeTooltip);
+      });
+      nodeGroup.appendChild(label);
     }
-    label.style.pointerEvents = "auto";
-    label.style.cursor = "pointer";
-    label.addEventListener("click", (event) => queueGraphNodeClickSelect(node.id, event));
-    label.addEventListener("mouseenter", (event) => {
-      emphasizeNode();
-      handleTreeDragHover(node.id);
-      showTreeTooltip(treeTooltip, node.title, event);
-    });
-    label.addEventListener("mousemove", (event) => moveTreeTooltip(treeTooltip, event));
-    label.addEventListener("mouseleave", () => {
-      normalizeNode();
-      handleTreeDragHover(null);
-      hideTreeTooltip(treeTooltip);
-    });
-    nodeGroup.appendChild(label);
 
     if (node.hiddenCount > 0) {
       const badge = document.createElementNS(svgNS, "g");
@@ -1887,6 +1885,7 @@ function renderTreeGraph(nodes = state.nodes) {
   canvas.className = "tree-graph-canvas";
   canvas.appendChild(svg);
   el.treeRoot.appendChild(canvas);
+  focusSelectedGraphNodeWhenZoomed(graph);
 }
 
 function getOrCreateTreeTooltip() {
@@ -1900,6 +1899,24 @@ function getOrCreateTreeTooltip() {
     el.treeRoot.appendChild(tooltip);
   }
   return tooltip;
+}
+
+function focusSelectedGraphNodeWhenZoomed(graph) {
+  if (!el.treeRoot || state.treeViewMode !== "graph" || state.graphZoom <= 1) {
+    return;
+  }
+  const selected = graph.nodes.find((node) => String(node.id) === String(state.selectedNodeId));
+  if (!selected) {
+    return;
+  }
+
+  const zoom = Number(state.graphZoom) || 1;
+  requestAnimationFrame(() => {
+    const viewportWidth = el.treeRoot.clientWidth || 0;
+    const viewportHeight = el.treeRoot.clientHeight || 0;
+    el.treeRoot.scrollLeft = Math.max(0, selected.x * zoom - viewportWidth / 2);
+    el.treeRoot.scrollTop = Math.max(0, selected.y * zoom - viewportHeight * 0.42);
+  });
 }
 
 function showTreeTooltip(tooltip, text, event) {
@@ -3149,6 +3166,7 @@ function detectPlacementChangeNotice(nodeId) {
       message: `질문이 '${actualParent?.title || "다른 경로"}' 분기로 이동했습니다.`,
       createdAt: Date.now()
     });
+    scheduleRootTopicCheckForPlacement(check, node, actualParentId);
     state.pendingPlacementChecks.delete(key);
     return;
   }
@@ -3181,6 +3199,25 @@ function detectPlacementChangeNotice(nodeId) {
   if (Date.now() - Number(check.createdAt || 0) > 60000) {
     state.pendingPlacementChecks.delete(key);
   }
+}
+
+function scheduleRootTopicCheckForPlacement(check, node, actualParentId) {
+  if (!check || !node || isCurrentRoomLocal()) {
+    return;
+  }
+  if (state.rootTopicNoticeNodeIds.has(String(node.id))) {
+    return;
+  }
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+  const parentIdForCheck = actualParentId || check.requestedParentId;
+  schedulePostAnswerRootTopicCheck({
+    roomId: effectiveRoomId,
+    parentId: parentIdForCheck,
+    question: check.question,
+    nodeId: node.id,
+    skip: !parentIdForCheck
+  });
 }
 
 function clearDepthRouteNoticeForNode(nodeId) {
@@ -3248,8 +3285,137 @@ function renderBranchNotice(node) {
   el.branchAlert.textContent = notice?.message || "";
 }
 
+function maybeHandleAssistantOutOfScopeNotice(response, nodeId, question, originalParentId) {
+  if (!nodeId || !isAssistantOutOfScopeAnswer(response?.answer)) {
+    return false;
+  }
+
+  const key = String(nodeId);
+  state.rootTopicNoticeNodeIds.add(key);
+  const rootTopic = getRootTopicLabelForNode(key);
+  setRouteNotice({
+    nodeId: key,
+    type: "strong",
+    kind: "topic",
+    message: `대주제 '${rootTopic}'와 관계가 낮은 노드가 생성되었습니다.`,
+    createdAt: Date.now()
+  });
+  clearBranchNotice();
+  renderInsights();
+  void openRootTopicDecisionDialog({
+    unrelated: true,
+    rootTopic,
+    similarity: 0
+  }).then(async (choice) => {
+    if (choice === "continue") {
+      await forceKeepNodeUnderOriginalParent({
+        nodeId: key,
+        parentId: originalParentId,
+        question
+      });
+      return;
+    }
+    if (choice !== "new_room") {
+      return;
+    }
+    try {
+      const currentNode = getNodeById(key);
+      const nextQuestion = currentNode?.userQuestion || question || "";
+      clearRouteNotice();
+      clearBranchNotice();
+      const newRoomId = await createRoomApi(summarizeRoomTitle(nextQuestion), state.currentSession?.accessToken || "");
+      clearPendingTreeMutations();
+      state.treeProcessingWatcherToken++;
+      state.currentRoomId = Number(newRoomId);
+      state.nodes = [];
+      state.treeNodes = [];
+      state.selectedNodeId = null;
+      await refreshRoomsOnly();
+      if (el.chatInput) {
+        el.chatInput.value = nextQuestion;
+      }
+      render();
+    } catch (error) {
+      setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+      render();
+    }
+  });
+  return true;
+}
+
+function isAssistantOutOfScopeAnswer(answer) {
+  const text = String(answer || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return false;
+  }
+  return /관련(?:이|은)?\s*(?:없는|없습니다|없으며|없고)|학습\s*목표(?:에서|를)?\s*벗어난|학습\s*목표와\s*관련|직접(?:적)?으로\s*관련(?:이)?\s*없|범위(?:를)?\s*벗어난|주제(?:가)?\s*아닙니다/.test(text);
+}
+
+function getRootTopicLabelForNode(nodeId) {
+  const path = getPathToNode(nodeId);
+  const root = path.find((node) => !node.parentId) || path[0] || state.nodes.find((node) => !node.parentId);
+  return root?.title || "현재 대화";
+}
+
+async function forceKeepNodeUnderOriginalParent({ nodeId, parentId, question }) {
+  const key = String(nodeId || "");
+  const node = getNodeById(key);
+  if (!key || !node) {
+    return;
+  }
+
+  const targetParentId = parentId != null ? String(parentId) : null;
+  const nextTitle = summarizeTitle(question || node.userQuestion || node.title || "");
+  const targetParent = targetParentId ? getNodeById(targetParentId) : null;
+  const nextDepth = targetParent ? Number(targetParent.depth || 0) + 1 : 0;
+
+  node.parentId = targetParentId;
+  node.title = nextTitle;
+  node.depth = nextDepth;
+  normalizeSubtreeDepths(state.nodes, key);
+  state.treeNodes = state.nodes.map(cloneNode);
+  state.selectedNodeId = key;
+  clearBranchNotice();
+  render();
+
+  if (isCurrentRoomLocal()) {
+    persistCurrentLocalConversationState();
+    return;
+  }
+
+  const localRoom = getLocalConversationRoom();
+  const effectiveRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+  if (!effectiveRoomId) {
+    return;
+  }
+
+  try {
+    if (state.treeBuildStatus === "processing") {
+      await waitForTreeProcessingToFinish(effectiveRoomId, key);
+    }
+    await forceNodePlacementApi(
+      effectiveRoomId,
+      key,
+      targetParentId,
+      nextTitle,
+      state.currentSession?.accessToken || ""
+    );
+    await loadRoomHistoryWithOptions(effectiveRoomId, { keepTreeWhileProcessing: false });
+    if (state.nodes.some((item) => String(item.id) === key)) {
+      state.selectedNodeId = key;
+    }
+    render();
+  } catch (error) {
+    setAuthMessage(`노드 위치 고정 실패: ${toUiError(error)}`, "error");
+    render();
+  }
+}
+
 function schedulePostAnswerRootTopicCheck({ roomId, parentId, question, nodeId, skip = false }) {
   if (skip || !roomId || !parentId || !question || !nodeId || isCurrentRoomLocal()) {
+    return;
+  }
+  if (state.rootTopicNoticeNodeIds.has(String(nodeId))) {
     return;
   }
   void checkRootTopicApi({
@@ -4512,9 +4678,17 @@ function compareTreeNodeOrder(left, right) {
 function getGraphRenderOptions() {
   const scale = clamp(Number(state.graphNodeSizeScale) || 1, 0.8, 1.5);
   const isBox = state.graphNodeShape === "box";
+  const zoom = clamp(Number(state.graphZoom) || 1, 0.6, 2.8);
+  const semanticCompact = zoom < 1;
+  const labeledDepth = zoom <= 0.65 ? 1 : (zoom <= 0.8 ? 2 : (zoom <= 0.9 ? 3 : Infinity));
   return {
     shape: isBox ? "box" : "circle",
     scale,
+    zoom,
+    semanticCompact,
+    labeledDepth,
+    prominentDepth: semanticCompact ? 1 : -1,
+    compactDotRadius: Math.round(6 + ((zoom - 0.6) / 0.4) * 4),
     radius: Math.round(30 * scale),
     circleLabelLength: Math.max(7, Math.floor(9 * scale)),
     minBoxWidth: Math.round(96 * scale),
@@ -4612,20 +4786,52 @@ function wrapGraphTitle(title, maxCharsPerLine) {
   return normalized;
 }
 
-function measureGraphNode(nodeId, title, options) {
+function getGraphNodeVisualMode(node, options) {
+  const depth = Number(node?.depth) || 0;
+  if (options.semanticCompact && depth > options.labeledDepth) {
+    return "dot";
+  }
+  if (options.semanticCompact && depth <= options.prominentDepth) {
+    return "prominent";
+  }
+  return "normal";
+}
+
+function measureGraphNode(node, title, options) {
+  const nodeId = node.id;
+  const visualMode = getGraphNodeVisualMode(node, options);
+  if (visualMode === "dot") {
+    const radius = Math.max(5, options.compactDotRadius);
+    return {
+      width: radius * 2,
+      height: radius * 2,
+      rx: radius,
+      ry: radius,
+      radius,
+      fontSize: options.fontSize,
+      lineHeight: options.lineHeight,
+      visualShape: "dot",
+      showLabel: false,
+      lines: []
+    };
+  }
+
+  const prominenceScale = visualMode === "prominent" ? 1.18 : 1;
   const nodeSize = getGraphNodeSize(nodeId);
   const averageScale = (nodeSize.width + nodeSize.height) / 2;
   if (options.shape === "circle") {
-    const rx = Math.round(options.radius * nodeSize.width);
-    const ry = Math.round(options.radius * nodeSize.height);
+    const rx = Math.round(options.radius * nodeSize.width * prominenceScale);
+    const ry = Math.round(options.radius * nodeSize.height * prominenceScale);
     return {
       width: rx * 2,
       height: ry * 2,
       rx,
       ry,
       radius: Math.max(rx, ry),
-      fontSize: Math.round(options.fontSize * Math.min(1.45, averageScale)),
+      fontSize: Math.round(options.fontSize * Math.min(1.45, averageScale * prominenceScale)),
       lineHeight: options.lineHeight,
+      visualShape: "circle",
+      showLabel: true,
       lines: [getCircleNodeTitle(title, options.circleLabelLength)]
     };
   }
@@ -4636,19 +4842,21 @@ function measureGraphNode(nodeId, title, options) {
   const baseWidth = Math.max(options.minBoxWidth, Math.round(longestLine * options.fontSize * 0.72) + options.horizontalPadding * 2);
   const baseHeight = lines.length * options.lineHeight + options.verticalPadding * 2;
   return {
-    width: Math.round(baseWidth * nodeSize.width),
-    height: Math.round(baseHeight * nodeSize.height),
+    width: Math.round(baseWidth * nodeSize.width * prominenceScale),
+    height: Math.round(baseHeight * nodeSize.height * prominenceScale),
     rx: 0,
     ry: 0,
     radius: 0,
-    fontSize,
-    lineHeight: Math.round(options.lineHeight * nodeSize.height),
+    fontSize: Math.round(fontSize * prominenceScale),
+    lineHeight: Math.round(options.lineHeight * nodeSize.height * prominenceScale),
+    visualShape: "box",
+    showLabel: true,
     lines
   };
 }
 
 function getGraphLabelStartY(node, options) {
-  if (options.shape === "circle") {
+  if (node.visualShape !== "box") {
     return node.y + Math.round(options.fontSize * 0.36);
   }
   const lineHeight = node.lineHeight || options.lineHeight;
@@ -4658,14 +4866,14 @@ function getGraphLabelStartY(node, options) {
 function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCountMap = new Map()) {
   const tree = buildTree(nodes);
   const roots = tree.filter((node) => node.parentId === null);
-  const xGap = Math.round((options.shape === "box" ? 34 : 44) * options.scale);
-  const yGap = Math.round((options.shape === "box" ? 84 : 98) * options.scale);
+  const xGap = Math.round((options.semanticCompact ? 28 : (options.shape === "box" ? 34 : 44)) * options.scale);
+  const yGap = Math.round((options.semanticCompact ? 68 : (options.shape === "box" ? 84 : 98)) * options.scale);
   const margin = Math.round((options.shape === "box" ? 42 : 34) * options.scale);
   const placed = [];
 
   function measureSubtree(node, depth) {
     const displayTitle = getGraphDisplayTitle(node);
-    const metrics = measureGraphNode(node.id, displayTitle, options);
+    const metrics = measureGraphNode(node, displayTitle, options);
     const childLayouts = node.children.map((child) => measureSubtree(child, depth + 1));
     const childrenWidth = childLayouts.reduce((sum, child) => sum + child.subtreeWidth, 0)
       + Math.max(0, childLayouts.length - 1) * xGap;
@@ -4696,6 +4904,8 @@ function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCoun
       radius: layout.radius,
       fontSize: layout.fontSize,
       lineHeight: layout.lineHeight,
+      visualShape: layout.visualShape,
+      showLabel: layout.showLabel,
       lines: layout.lines,
       hiddenCount: layout.hiddenCount
     });
