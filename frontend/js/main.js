@@ -25,6 +25,8 @@ if (typeof window !== "undefined") {
 
 let transparentDragImage = null;
 let graphNodeClickTimer = null;
+let treeGraphResizeFrame = null;
+let lastTreeGraphResizeKey = "";
 let lastGraphNodePointerDown = {
   nodeId: null,
   time: 0,
@@ -32,16 +34,26 @@ let lastGraphNodePointerDown = {
   y: 0
 };
 
+const UI_THEME_STORAGE_KEY = "pathlearn.uiTheme";
+const UI_THEME_IDS = new Set(["default", "mist", "sage", "lavender"]);
+const GRAPH_ZOOM_PRESETS = [
+  0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
+  1, 1.1, 1.2, 1.3, 1.4
+];
+
 const state = {
   currentSession: loadSession(),
   currentView: "landing",
+  uiTheme: loadUiTheme(),
   treeViewMode: "list",
   graphZoom: 1,
   graphNodeShape: "circle",
   graphNodeSizeScale: 1,
+  graphTreeScale: 1,
   graphResizeMode: false,
   graphNodeSizeById: new Map(),
   collapsedGraphNodeIds: new Set(),
+  importantNodeIds: new Set(),
   roomDeleteMode: false,
   selectedRoomIdsForDelete: new Set(),
   localConversationRooms: [],
@@ -144,10 +156,14 @@ const el = {
   graphZoomOutBtn: document.getElementById("graphZoomOutBtn"),
   graphZoomResetBtn: document.getElementById("graphZoomResetBtn"),
   graphZoomLevel: document.getElementById("graphZoomLevel"),
+  graphZoomSelect: document.getElementById("graphZoomSelect"),
   graphZoomFooter: document.getElementById("graphZoomFooter"),
   treeBuildStatus: document.getElementById("treeBuildStatus"),
   graphCircleShapeBtn: document.getElementById("graphCircleShapeBtn"),
   graphBoxShapeBtn: document.getElementById("graphBoxShapeBtn"),
+  graphTreeScaleInBtn: document.getElementById("graphTreeScaleInBtn"),
+  graphTreeScaleOutBtn: document.getElementById("graphTreeScaleOutBtn"),
+  graphTreeScaleLevel: document.getElementById("graphTreeScaleLevel"),
   graphResizeModeBtn: document.getElementById("graphResizeModeBtn"),
 
   branchTag: document.getElementById("branchTag"),
@@ -159,6 +175,7 @@ const el = {
   selectedNodeMeta: document.getElementById("selectedNodeMeta"),
   rebuildConversationBtn: document.getElementById("rebuildConversationBtn"),
   extractKnowledgeBtn: document.getElementById("extractKnowledgeBtn"),
+  markImportantNodeBtn: document.getElementById("markImportantNodeBtn"),
   deleteSelectedNodeBtn: document.getElementById("deleteSelectedNodeBtn"),
   treeEditHint: document.getElementById("treeEditHint"),
   depthBar: document.getElementById("depthBar"),
@@ -180,9 +197,11 @@ const el = {
   nodeSearchContainers: document.querySelectorAll("[data-node-search]"),
   nodeSearchSelects: document.querySelectorAll(".node-search-select"),
   nodeSearchInputs: document.querySelectorAll(".node-search-input"),
-  nodeSearchResults: document.querySelectorAll(".node-search-results")
+  nodeSearchResults: document.querySelectorAll(".node-search-results"),
+  themeOptionBtns: document.querySelectorAll("[data-theme-option]")
 };
 
+applyUiTheme(state.uiTheme);
 bindEvents();
 setupPanelResizers();
 render();
@@ -237,6 +256,9 @@ function bindEvents() {
   el.profileForm?.addEventListener("submit", onUpdateProfile);
   el.deleteAccountForm?.addEventListener("submit", onDeleteAccount);
   el.chatForm?.addEventListener("submit", onSendMessage);
+  el.themeOptionBtns?.forEach((button) => {
+    button.addEventListener("click", () => setUiTheme(button.dataset.themeOption || "default"));
+  });
   el.nodeSearchSelects?.forEach((select) => {
     select.addEventListener("change", () => {
       setNodeSearchMode(select.value || "all");
@@ -250,11 +272,14 @@ function bindEvents() {
 
   el.treeListModeBtn?.addEventListener("click", () => setTreeViewMode("list"));
   el.treeGraphModeBtn?.addEventListener("click", () => setTreeViewMode("graph"));
-  el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(0.2));
-  el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-0.2));
+  el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(1));
+  el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-1));
+  el.graphZoomSelect?.addEventListener("change", () => setGraphZoom(Number(el.graphZoomSelect.value) || 1));
   el.graphZoomResetBtn?.addEventListener("click", resetGraphZoom);
   el.graphCircleShapeBtn?.addEventListener("click", () => setGraphNodeShape("circle"));
   el.graphBoxShapeBtn?.addEventListener("click", () => setGraphNodeShape("box"));
+  el.graphTreeScaleInBtn?.addEventListener("click", () => changeGraphTreeScale(0.25));
+  el.graphTreeScaleOutBtn?.addEventListener("click", () => changeGraphTreeScale(-0.25));
   el.graphResizeModeBtn?.addEventListener("click", toggleGraphResizeMode);
 
   el.roomDrawerToggle?.addEventListener("click", () => toggleRoomDrawer());
@@ -266,6 +291,7 @@ function bindEvents() {
   el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
   el.rebuildConversationBtn?.addEventListener("click", () => onOpenPathModal("rebuild"));
   el.extractKnowledgeBtn?.addEventListener("click", () => onOpenPathModal("extract"));
+  el.markImportantNodeBtn?.addEventListener("click", toggleSelectedNodeImportant);
   el.deleteSelectedNodeBtn?.addEventListener("click", onDeleteSelectedNode);
   el.rebuildModalCloseBtn?.addEventListener("click", closeRebuildModal);
   el.rebuildModalCancelBtn?.addEventListener("click", closeRebuildModal);
@@ -276,6 +302,38 @@ function bindEvents() {
     }
   });
   document.addEventListener("dragover", onDocumentTreeDragOver);
+  setupTreeGraphResizeObserver();
+}
+
+function setupTreeGraphResizeObserver() {
+  const targets = [el.treeRoot, el.treePanel].filter(Boolean);
+  const scheduleResizeRender = () => {
+    const rect = el.treeRoot?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const sizeKey = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+    if (sizeKey === lastTreeGraphResizeKey) {
+      return;
+    }
+    lastTreeGraphResizeKey = sizeKey;
+    if (treeGraphResizeFrame) {
+      cancelAnimationFrame(treeGraphResizeFrame);
+    }
+    treeGraphResizeFrame = requestAnimationFrame(() => {
+      treeGraphResizeFrame = null;
+      if (state.currentView === "app" && state.treeViewMode === "graph") {
+        renderTree();
+      }
+    });
+  };
+
+  if (typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(scheduleResizeRender);
+    targets.forEach((target) => observer.observe(target));
+  }
+
+  window.addEventListener("resize", scheduleResizeRender);
 }
 
 function render() {
@@ -286,11 +344,45 @@ function render() {
   renderChat();
   renderInsights();
   renderRebuildModal();
+  renderThemeControls();
   syncChatInputAvailability();
 }
 
 function cloneNode(node) {
   return { ...node };
+}
+
+function loadUiTheme() {
+  try {
+    const saved = localStorage.getItem(UI_THEME_STORAGE_KEY);
+    return UI_THEME_IDS.has(saved) ? saved : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function setUiTheme(themeId) {
+  state.uiTheme = UI_THEME_IDS.has(themeId) ? themeId : "default";
+  applyUiTheme(state.uiTheme);
+  try {
+    localStorage.setItem(UI_THEME_STORAGE_KEY, state.uiTheme);
+  } catch {
+    // 로컬 저장이 막힌 환경에서는 현재 화면에만 적용합니다.
+  }
+  renderThemeControls();
+}
+
+function applyUiTheme(themeId) {
+  if (!document?.body) {
+    return;
+  }
+  document.body.dataset.theme = UI_THEME_IDS.has(themeId) ? themeId : "default";
+}
+
+function renderThemeControls() {
+  el.themeOptionBtns?.forEach((button) => {
+    button.classList.toggle("active", button.dataset.themeOption === state.uiTheme);
+  });
 }
 
 function isLocalConversationRoomId(roomId) {
@@ -737,6 +829,7 @@ async function bootstrapChatRooms() {
       state.selectedNodeId = null;
       state.collapsedGraphNodeIds.clear();
       state.graphNodeSizeById.clear();
+      state.importantNodeIds.clear();
       state.treeBuildStatus = "completed";
       state.treeProcessingWatcherToken++;
       return;
@@ -769,6 +862,7 @@ async function bootstrapChatRooms() {
     state.selectedNodeId = null;
     state.collapsedGraphNodeIds.clear();
     state.graphNodeSizeById.clear();
+    state.importantNodeIds.clear();
       state.treeBuildStatus = "completed";
     state.treeProcessingWatcherToken++;
     setAuthMessage(toUiError(error), "error");
@@ -893,6 +987,7 @@ async function onApplyDeleteSelectedRooms() {
       state.selectedNodeId = null;
       state.collapsedGraphNodeIds.clear();
       state.graphNodeSizeById.clear();
+      state.importantNodeIds.clear();
       state.treeBuildStatus = "completed";
       state.treeProcessingWatcherToken++;
     }
@@ -930,6 +1025,7 @@ async function createRoomWithFallbackTitle() {
 async function loadRoomHistory(roomId) {
   state.collapsedGraphNodeIds.clear();
   state.graphNodeSizeById.clear();
+  state.importantNodeIds.clear();
   return loadRoomHistoryWithOptions(roomId, {});
 }
 
@@ -1681,9 +1777,16 @@ function renderTree() {
   if (el.graphZoomLevel) {
     el.graphZoomLevel.textContent = `${Math.round(state.graphZoom * 100)}%`;
   }
+  if (el.graphZoomSelect) {
+    el.graphZoomSelect.value = String(getClosestGraphZoomPreset(state.graphZoom));
+  }
+  if (el.graphTreeScaleLevel) {
+    el.graphTreeScaleLevel.textContent = `${Math.round(state.graphTreeScale * 100)}%`;
+  }
   el.graphCircleShapeBtn?.classList.toggle("active", state.graphNodeShape === "circle");
   el.graphBoxShapeBtn?.classList.toggle("active", state.graphNodeShape === "box");
   el.graphResizeModeBtn?.classList.toggle("active", state.graphResizeMode);
+  renderImportantNodeButton();
   renderTreeBuildStatus();
 
   const treeNodes = getRenderableTreeNodes();
@@ -1724,6 +1827,36 @@ function renderTreeBuildStatus() {
   el.treeBuildStatus.classList.toggle("completed", !isProcessing);
 }
 
+function renderImportantNodeButton() {
+  if (!el.markImportantNodeBtn) {
+    return;
+  }
+  const hasSelectedNode = Boolean(state.selectedNodeId && getNodeById(state.selectedNodeId));
+  const isMarked = hasSelectedNode && isImportantNode(state.selectedNodeId);
+  el.markImportantNodeBtn.disabled = !hasSelectedNode;
+  el.markImportantNodeBtn.textContent = isMarked ? "마크업 해제" : "마크업";
+  el.markImportantNodeBtn.classList.toggle("active", isMarked);
+}
+
+function isImportantNode(nodeId) {
+  return state.importantNodeIds.has(String(nodeId));
+}
+
+function toggleSelectedNodeImportant() {
+  const selectedNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
+  if (!selectedNode) {
+    return;
+  }
+  const key = String(selectedNode.id);
+  if (state.importantNodeIds.has(key)) {
+    state.importantNodeIds.delete(key);
+  } else {
+    state.importantNodeIds.add(key);
+  }
+  renderTree();
+  renderInsights();
+}
+
 function renderTreeList(nodes = state.nodes) {
   const roots = buildTree(nodes).filter((node) => node.parentId === null);
   roots.forEach((node) => el.treeRoot.appendChild(renderTreeNode(node)));
@@ -1733,7 +1866,7 @@ function renderTreeGraph(nodes = state.nodes) {
   const options = getGraphRenderOptions();
   expandCollapsedAncestorsForNode(state.selectedNodeId, state.nodes);
   expandCollapsedAncestorsForNode(state.selectedNodeId, state.treeNodes);
-  const graphNodes = getVisibleGraphNodes(nodes);
+  const graphNodes = getZoomScopedGraphNodes(getVisibleGraphNodes(nodes));
   const hiddenCountMap = getCollapsedHiddenCountMap(nodes);
   const graph = getTreeGraphLayout(graphNodes, options, hiddenCountMap);
   const svgNS = "http://www.w3.org/2000/svg";
@@ -1741,9 +1874,22 @@ function renderTreeGraph(nodes = state.nodes) {
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "tree-graph-svg");
   svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
-  svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
-  svg.style.width = `${Math.max(320, Math.round(graph.width * state.graphZoom))}px`;
-  svg.style.height = `${Math.max(220, Math.round(graph.height * state.graphZoom))}px`;
+  const viewportWidth = el.treeRoot?.clientWidth || 0;
+  const viewportHeight = el.treeRoot?.clientHeight || 0;
+  const isNarrowGraphViewport = viewportWidth > 0 && viewportWidth < 420;
+  const fitScale = Math.min(
+    viewportWidth > 0 ? (viewportWidth * 0.985) / Math.max(graph.width, 1) : 1,
+    viewportHeight > 0 ? (viewportHeight * 0.94) / Math.max(graph.height, 1) : 1
+  );
+  const isMapFitZoom = state.graphZoom <= 1 || (isNarrowGraphViewport && fitScale < state.graphZoom);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  const baseRenderScale = state.graphZoom <= 1 ? fitScale : Math.max(fitScale, 1);
+  const renderedScale = isMapFitZoom
+    ? clamp(baseRenderScale * state.graphTreeScale, 0.25, 8)
+    : state.graphZoom * state.graphTreeScale;
+  const isViewportFitted = renderedScale <= fitScale * 1.02;
+  svg.style.width = `${Math.max(160, Math.round(graph.width * renderedScale))}px`;
+  svg.style.height = `${Math.max(120, Math.round(graph.height * renderedScale))}px`;
 
   graph.links.forEach((link) => {
     const line = document.createElementNS(svgNS, "line");
@@ -1762,27 +1908,28 @@ function renderTreeGraph(nodes = state.nodes) {
     nodeGroup.setAttribute("class", buildGraphNodeGroupClass(node.id));
     nodeGroup.dataset.nodeId = String(node.id);
 
-    const shape = node.visualShape === "box"
+    const shape = node.visualShape === "box" || node.visualShape === "mini-box"
       ? document.createElementNS(svgNS, "rect")
       : document.createElementNS(svgNS, "ellipse");
-    if (node.visualShape === "box") {
+    if (node.visualShape === "box" || node.visualShape === "mini-box") {
       shape.setAttribute("x", String(node.x - node.width / 2));
       shape.setAttribute("y", String(node.y - node.height / 2));
       shape.setAttribute("width", String(node.width));
       shape.setAttribute("height", String(node.height));
-      shape.setAttribute("rx", String(options.cornerRadius));
-      shape.setAttribute("ry", String(options.cornerRadius));
+      const cornerRadius = node.visualShape === "mini-box" ? Math.max(3, Math.round(node.height * 0.24)) : options.cornerRadius;
+      shape.setAttribute("rx", String(cornerRadius));
+      shape.setAttribute("ry", String(cornerRadius));
     } else {
       shape.setAttribute("cx", String(node.x));
       shape.setAttribute("cy", String(node.y));
       shape.setAttribute("rx", String(node.rx));
       shape.setAttribute("ry", String(node.ry));
     }
-    const shapeClass = node.visualShape === "box" ? "tree-node-box" : "tree-node-circle";
+    const shapeClass = node.visualShape === "box" || node.visualShape === "mini-box" ? "tree-node-box" : "tree-node-circle";
     shape.setAttribute("class", node.id === state.selectedNodeId ? `${shapeClass} active` : shapeClass);
     const emphasizeNode = () => {
       shape.classList.add("hovered");
-      if (node.visualShape !== "box") {
+      if (node.visualShape !== "box" && node.visualShape !== "mini-box") {
         const grow = node.id === state.selectedNodeId ? 5 : 3;
         shape.setAttribute("rx", String(node.rx + grow));
         shape.setAttribute("ry", String(node.ry + grow));
@@ -1790,7 +1937,7 @@ function renderTreeGraph(nodes = state.nodes) {
     };
     const normalizeNode = () => {
       shape.classList.remove("hovered");
-      if (node.visualShape !== "box") {
+      if (node.visualShape !== "box" && node.visualShape !== "mini-box") {
         shape.setAttribute("rx", String(node.rx));
         shape.setAttribute("ry", String(node.ry));
       }
@@ -1826,7 +1973,7 @@ function renderTreeGraph(nodes = state.nodes) {
           label.appendChild(tspan);
         });
       } else {
-        label.textContent = getCircleNodeTitle(node.title, options.circleLabelLength);
+        label.textContent = node.lines?.[0] || getCircleNodeTitle(node.title, options.circleLabelLength);
       }
       label.style.pointerEvents = "auto";
       label.style.cursor = "pointer";
@@ -1843,6 +1990,15 @@ function renderTreeGraph(nodes = state.nodes) {
         hideTreeTooltip(treeTooltip);
       });
       nodeGroup.appendChild(label);
+    }
+
+    if (isImportantNode(node.id)) {
+      const marker = document.createElementNS(svgNS, "text");
+      marker.setAttribute("x", String(node.x - node.width / 2 + 10));
+      marker.setAttribute("y", String(node.y - node.height / 2 + 16));
+      marker.setAttribute("class", "tree-node-important-marker");
+      marker.textContent = "★";
+      nodeGroup.appendChild(marker);
     }
 
     if (node.hiddenCount > 0) {
@@ -1882,7 +2038,7 @@ function renderTreeGraph(nodes = state.nodes) {
   });
 
   const canvas = document.createElement("div");
-  canvas.className = "tree-graph-canvas";
+  canvas.className = `tree-graph-canvas ${isViewportFitted ? "fit-view" : "zoom-view"}`;
   canvas.appendChild(svg);
   el.treeRoot.appendChild(canvas);
   focusSelectedGraphNodeWhenZoomed(graph);
@@ -1902,7 +2058,7 @@ function getOrCreateTreeTooltip() {
 }
 
 function focusSelectedGraphNodeWhenZoomed(graph) {
-  if (!el.treeRoot || state.treeViewMode !== "graph" || state.graphZoom <= 1) {
+  if (!el.treeRoot || state.treeViewMode !== "graph" || (state.graphZoom <= 1 && state.graphTreeScale <= 1)) {
     return;
   }
   const selected = graph.nodes.find((node) => String(node.id) === String(state.selectedNodeId));
@@ -1910,10 +2066,18 @@ function focusSelectedGraphNodeWhenZoomed(graph) {
     return;
   }
 
-  const zoom = Number(state.graphZoom) || 1;
+  const viewportWidth = el.treeRoot.clientWidth || 0;
+  const viewportHeight = el.treeRoot.clientHeight || 0;
+  const fitScale = Math.min(
+    viewportWidth > 0 ? (viewportWidth * 0.985) / Math.max(graph.width, 1) : 1,
+    viewportHeight > 0 ? (viewportHeight * 0.94) / Math.max(graph.height, 1) : 1
+  );
+  const baseRenderScale = state.graphZoom <= 1 ? fitScale : Math.max(fitScale, 1);
+  const zoom = (state.graphZoom <= 1 ? baseRenderScale : Number(state.graphZoom) || 1) * (Number(state.graphTreeScale) || 1);
   requestAnimationFrame(() => {
-    const viewportWidth = el.treeRoot.clientWidth || 0;
-    const viewportHeight = el.treeRoot.clientHeight || 0;
+    if (viewportWidth < 420) {
+      return;
+    }
     el.treeRoot.scrollLeft = Math.max(0, selected.x * zoom - viewportWidth / 2);
     el.treeRoot.scrollTop = Math.max(0, selected.y * zoom - viewportHeight * 0.42);
   });
@@ -1985,10 +2149,10 @@ function startGraphNodeResize(event, node, mode = "both") {
     const deltaY = moveEvent.clientY - startY;
     const nextSize = { ...startSize };
     if (mode === "width" || mode === "both") {
-      nextSize.width = clamp(Number((startSize.width * (1 + deltaX / startWidth)).toFixed(2)), 0.65, 2.4);
+      nextSize.width = clamp(Number((startSize.width * (1 + deltaX / startWidth)).toFixed(2)), 0.65, 7);
     }
     if (mode === "height" || mode === "both") {
-      nextSize.height = clamp(Number((startSize.height * (1 + deltaY / startHeight)).toFixed(2)), 0.65, 2.4);
+      nextSize.height = clamp(Number((startSize.height * (1 + deltaY / startHeight)).toFixed(2)), 0.65, 4);
     }
     state.graphNodeSizeById.set(getGraphNodeSizeKey(nodeId), nextSize);
     renderTree();
@@ -2055,10 +2219,14 @@ function renderTreeNode(node) {
   if (node.id === state.selectedNodeId) {
     button.classList.add("active");
   }
+  if (isImportantNode(node.id)) {
+    button.classList.add("important");
+  }
   button.draggable = false;
 
   const time = new Date(node.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  button.innerHTML = `<span class="node-title">${escapeHtml(node.title)}</span><span class="node-meta">Depth ${node.depth} / ${time}</span>`;
+  const importantMark = isImportantNode(node.id) ? `<span class="node-important-mark">★</span>` : "";
+  button.innerHTML = `<span class="node-title">${importantMark}${escapeHtml(node.title)}</span><span class="node-meta">Depth ${node.depth} / ${time}</span>`;
   button.addEventListener("click", () => {
     if (state.suppressNodeClick) {
       state.suppressNodeClick = false;
@@ -2099,6 +2267,9 @@ function buildTreeNodeClass(nodeId) {
 
 function buildGraphNodeGroupClass(nodeId) {
   const classes = ["tree-node-group"];
+  if (isImportantNode(nodeId)) {
+    classes.push("important");
+  }
   if (isNodeInDraggedSubtree(nodeId)) {
     classes.push("drag-subtree");
   }
@@ -2229,6 +2400,57 @@ function getVisibleGraphNodes(nodes = state.nodes) {
   return nodes.filter((node) => !hiddenIds.has(String(node.id)));
 }
 
+function getZoomScopedGraphNodes(nodes = state.nodes) {
+  if (state.graphZoom <= 1 || !state.selectedNodeId) {
+    return nodes;
+  }
+
+  const selectedId = String(state.selectedNodeId);
+  if (!nodes.some((node) => String(node.id) === selectedId)) {
+    return nodes;
+  }
+
+  const radius = state.graphZoom >= 1.4 ? 0 : (state.graphZoom >= 1.3 ? 1 : (state.graphZoom >= 1.2 ? 2 : 3));
+  const neighbors = new Map();
+  nodes.forEach((node) => {
+    const nodeId = String(node.id);
+    if (!neighbors.has(nodeId)) {
+      neighbors.set(nodeId, new Set());
+    }
+    if (node.parentId != null && nodes.some((entry) => String(entry.id) === String(node.parentId))) {
+      const parentId = String(node.parentId);
+      if (!neighbors.has(parentId)) {
+        neighbors.set(parentId, new Set());
+      }
+      neighbors.get(nodeId).add(parentId);
+      neighbors.get(parentId).add(nodeId);
+    }
+  });
+
+  const includedIds = new Set([selectedId]);
+  const queue = [{ id: selectedId, distance: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    if (current.distance >= radius) {
+      continue;
+    }
+    (neighbors.get(current.id) || []).forEach((nextId) => {
+      if (includedIds.has(nextId)) {
+        return;
+      }
+      includedIds.add(nextId);
+      queue.push({ id: nextId, distance: current.distance + 1 });
+    });
+  }
+
+  return nodes
+    .filter((node) => includedIds.has(String(node.id)))
+    .map((node) => ({
+      ...node,
+      parentId: node.parentId != null && includedIds.has(String(node.parentId)) ? node.parentId : null
+    }));
+}
+
 function toggleGraphNodeCollapse(nodeId, nodes = state.nodes) {
   if (state.dragState.active) {
     return;
@@ -2285,6 +2507,9 @@ function transferGraphNodeUiState(fromNodeId, toNodeId) {
   if (state.collapsedGraphNodeIds.delete(fromKey)) {
     state.collapsedGraphNodeIds.add(toKey);
   }
+  if (state.importantNodeIds.delete(fromKey)) {
+    state.importantNodeIds.add(toKey);
+  }
 }
 
 function deleteGraphNodeSizeState(nodeId) {
@@ -2329,6 +2554,7 @@ function applyTreeMutationLocally(mutation) {
       }
       collapsedIdsToClear.forEach((nodeId) => {
         state.collapsedGraphNodeIds.delete(String(nodeId));
+        state.importantNodeIds.delete(String(nodeId));
         deleteGraphNodeSizeState(nodeId);
       });
     }
@@ -2349,6 +2575,7 @@ function applyTreeMutationLocally(mutation) {
     }
     collapsedIdsToClear.forEach((nodeId) => {
       state.collapsedGraphNodeIds.delete(String(nodeId));
+      state.importantNodeIds.delete(String(nodeId));
       deleteGraphNodeSizeState(nodeId);
     });
   }
@@ -2749,6 +2976,7 @@ async function renderInsights() {
     if (el.selectedNodeTitle) el.selectedNodeTitle.textContent = "선택 없음";
     if (el.selectedNodeMeta) el.selectedNodeMeta.textContent = "Depth - / Parent -";
     if (el.rebuildConversationBtn) el.rebuildConversationBtn.disabled = true;
+    if (el.markImportantNodeBtn) el.markImportantNodeBtn.disabled = true;
     if (el.deleteSelectedNodeBtn) el.deleteSelectedNodeBtn.disabled = true;
     if (el.treeEditHint) el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
     if (el.depthBar) {
@@ -2778,6 +3006,7 @@ async function renderInsights() {
   if (el.deleteSelectedNodeBtn) {
     el.deleteSelectedNodeBtn.disabled = !canEditTree;
   }
+  renderImportantNodeButton();
   if (el.treeEditHint) {
     if (!canEditTree) {
       el.treeEditHint.textContent = "트리 구성 중에는 편집할 수 없습니다.";
@@ -4063,6 +4292,7 @@ function loadLocalConversationRoom(roomId) {
   state.selectedNodeId = room.selectedNodeId;
   state.collapsedGraphNodeIds.clear();
   state.graphNodeSizeById.clear();
+  state.importantNodeIds.clear();
   state.treeBuildStatus = "completed";
   state.treeProcessingWatcherToken++;
   return true;
@@ -4591,16 +4821,43 @@ function summarizeRoomTitle(text) {
   return clean.length <= 24 ? clean : `${clean.slice(0, 24)}...`;
 }
 
-function changeGraphZoom(delta) {
+function getClosestGraphZoomPreset(value) {
+  const zoom = Number(value) || 1;
+  return GRAPH_ZOOM_PRESETS.reduce((closest, preset) => (
+    Math.abs(preset - zoom) < Math.abs(closest - zoom) ? preset : closest
+  ), GRAPH_ZOOM_PRESETS[0]);
+}
+
+function changeGraphZoom(direction) {
   if (state.treeViewMode !== "graph") {
     return;
   }
-  state.graphZoom = clamp(Number((state.graphZoom + delta).toFixed(2)), 0.6, 2.8);
+  const current = getClosestGraphZoomPreset(state.graphZoom);
+  const currentIndex = GRAPH_ZOOM_PRESETS.indexOf(current);
+  const nextIndex = clamp(currentIndex + Math.sign(direction), 0, GRAPH_ZOOM_PRESETS.length - 1);
+  state.graphZoom = GRAPH_ZOOM_PRESETS[nextIndex];
+  renderTree();
+}
+
+function setGraphZoom(value) {
+  if (state.treeViewMode !== "graph") {
+    return;
+  }
+  state.graphZoom = getClosestGraphZoomPreset(value);
   renderTree();
 }
 
 function resetGraphZoom() {
   state.graphZoom = 1;
+  state.graphTreeScale = 1;
+  renderTree();
+}
+
+function changeGraphTreeScale(delta) {
+  if (state.treeViewMode !== "graph") {
+    return;
+  }
+  state.graphTreeScale = clamp(Number((state.graphTreeScale + delta).toFixed(2)), 0.5, 4);
   renderTree();
 }
 
@@ -4678,25 +4935,26 @@ function compareTreeNodeOrder(left, right) {
 function getGraphRenderOptions() {
   const scale = clamp(Number(state.graphNodeSizeScale) || 1, 0.8, 1.5);
   const isBox = state.graphNodeShape === "box";
-  const zoom = clamp(Number(state.graphZoom) || 1, 0.6, 2.8);
+  const zoom = clamp(Number(state.graphZoom) || 1, 0.4, 2.8);
   const semanticCompact = zoom < 1;
-  const labeledDepth = zoom <= 0.65 ? 1 : (zoom <= 0.8 ? 2 : (zoom <= 0.9 ? 3 : Infinity));
+  const labeledDepth = zoom <= 0.45 ? -1 : (zoom <= 0.55 ? 0 : (zoom <= 0.65 ? 1 : (zoom <= 0.75 ? 2 : (zoom <= 0.85 ? 3 : (zoom <= 0.9 ? 4 : Infinity)))));
+  const dotProgress = clamp((zoom - 0.4) / 0.6, 0, 1);
   return {
     shape: isBox ? "box" : "circle",
     scale,
     zoom,
     semanticCompact,
     labeledDepth,
-    prominentDepth: semanticCompact ? 1 : -1,
-    compactDotRadius: Math.round(6 + ((zoom - 0.6) / 0.4) * 4),
-    radius: Math.round(30 * scale),
+    prominentDepth: semanticCompact && labeledDepth >= 1 ? 1 : -1,
+    compactDotRadius: Math.round(8 + dotProgress * 3),
+    radius: Math.round((semanticCompact ? 24 : 30) * scale),
     circleLabelLength: Math.max(7, Math.floor(9 * scale)),
-    minBoxWidth: Math.round(96 * scale),
-    maxCharsPerLine: Math.max(8, Math.floor(13 * scale)),
-    horizontalPadding: Math.round(18 * scale),
-    verticalPadding: Math.round(12 * scale),
-    lineHeight: Math.round(17 * scale),
-    fontSize: Math.round((isBox ? 12 : 13) * scale),
+    minBoxWidth: Math.round(158 * scale),
+    maxCharsPerLine: Math.max(12, Math.floor(20 * scale)),
+    horizontalPadding: Math.round((isBox ? 30 : 18) * scale),
+    verticalPadding: Math.round((isBox ? 18 : 12) * scale),
+    lineHeight: Math.round((isBox ? 22 : 17) * scale),
+    fontSize: Math.round((isBox ? 16 : 13) * scale),
     cornerRadius: Math.round(12 * scale)
   };
 }
@@ -4712,8 +4970,8 @@ function getGraphNodeSize(nodeId) {
     return { width: scale, height: scale };
   }
   return {
-    width: clamp(Number(stored?.width) || 1, 0.65, 2.4),
-    height: clamp(Number(stored?.height) || 1, 0.65, 2.4)
+    width: clamp(Number(stored?.width) || 1, 0.65, 7),
+    height: clamp(Number(stored?.height) || 1, 0.65, 4)
   };
 }
 
@@ -4802,43 +5060,49 @@ function measureGraphNode(node, title, options) {
   const visualMode = getGraphNodeVisualMode(node, options);
   if (visualMode === "dot") {
     const radius = Math.max(5, options.compactDotRadius);
+    const visualShape = options.shape === "box" ? "mini-box" : "dot";
     return {
-      width: radius * 2,
-      height: radius * 2,
+      width: visualShape === "mini-box" ? radius * 2.3 : radius * 2,
+      height: visualShape === "mini-box" ? radius * 1.7 : radius * 2,
       rx: radius,
       ry: radius,
       radius,
       fontSize: options.fontSize,
       lineHeight: options.lineHeight,
-      visualShape: "dot",
+      visualShape,
       showLabel: false,
       lines: []
     };
   }
 
-  const prominenceScale = visualMode === "prominent" ? 1.18 : 1;
+  const prominenceScale = visualMode === "prominent" ? 1.04 : 1;
   const nodeSize = getGraphNodeSize(nodeId);
-  const averageScale = (nodeSize.width + nodeSize.height) / 2;
+  const textScale = visualMode === "prominent" ? 1.04 : 1;
   if (options.shape === "circle") {
     const rx = Math.round(options.radius * nodeSize.width * prominenceScale);
     const ry = Math.round(options.radius * nodeSize.height * prominenceScale);
+    const circleLabelLength = Math.max(
+      options.circleLabelLength,
+      Math.floor((rx * 2 - 8) / Math.max(6, options.fontSize * 0.38))
+    );
     return {
       width: rx * 2,
       height: ry * 2,
       rx,
       ry,
       radius: Math.max(rx, ry),
-      fontSize: Math.round(options.fontSize * Math.min(1.45, averageScale * prominenceScale)),
+      fontSize: Math.round(options.fontSize * textScale),
       lineHeight: options.lineHeight,
       visualShape: "circle",
       showLabel: true,
-      lines: [getCircleNodeTitle(title, options.circleLabelLength)]
+      lines: [getCircleNodeTitle(title, circleLabelLength)]
     };
   }
 
-  const lines = wrapGraphTitle(title, options.maxCharsPerLine);
+  const lineCapacity = Math.max(options.maxCharsPerLine, Math.floor(options.maxCharsPerLine * nodeSize.width * 1.35));
+  const lines = wrapGraphTitle(title, lineCapacity);
   const longestLine = Math.max(...lines.map((line) => line.length), 1);
-  const fontSize = Math.round(options.fontSize * Math.min(1.35, averageScale));
+  const fontSize = Math.round(options.fontSize * textScale);
   const baseWidth = Math.max(options.minBoxWidth, Math.round(longestLine * options.fontSize * 0.72) + options.horizontalPadding * 2);
   const baseHeight = lines.length * options.lineHeight + options.verticalPadding * 2;
   return {
@@ -4866,9 +5130,9 @@ function getGraphLabelStartY(node, options) {
 function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCountMap = new Map()) {
   const tree = buildTree(nodes);
   const roots = tree.filter((node) => node.parentId === null);
-  const xGap = Math.round((options.semanticCompact ? 28 : (options.shape === "box" ? 34 : 44)) * options.scale);
-  const yGap = Math.round((options.semanticCompact ? 68 : (options.shape === "box" ? 84 : 98)) * options.scale);
-  const margin = Math.round((options.shape === "box" ? 42 : 34) * options.scale);
+  const xGap = Math.round((options.semanticCompact ? 46 : (options.shape === "box" ? 18 : 44)) * options.scale);
+  const yGap = Math.round((options.semanticCompact ? 78 : (options.shape === "box" ? 76 : 98)) * options.scale);
+  const margin = Math.round((options.shape === "box" ? 24 : 34) * options.scale);
   const placed = [];
 
   function measureSubtree(node, depth) {
