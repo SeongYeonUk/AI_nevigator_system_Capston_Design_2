@@ -1,16 +1,14 @@
 package com.rabbit.domain.chat.service;
 
-import com.rabbit.domain.chat.entity.ChatMessage;
-import com.rabbit.domain.chat.enums.SenderRole;
+import com.rabbit.domain.chat.dto.TopicExtractionResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Locale;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ConversationTreePlannerService {
@@ -18,227 +16,80 @@ public class ConversationTreePlannerService {
     private static final int TITLE_LIMIT = 24;
     private static final int TOPIC_LIMIT = 30;
 
-    private static final Pattern ROOT_PATTERN = Pattern.compile(
-            "(?i)(?:\\broot\\s*topic\\b|\\blevel\\s*1\\b|\\bmain\\s*topic\\b|대주제|루트\\s*주제|루트)\\s*(?:[:\\-]|은|는|이야|야)?\\s*([^\\n,;|]+)"
-    );
-    private static final Pattern SUB_PATTERN = Pattern.compile(
-            "(?i)(?:\\bsub\\s*topics?\\b|\\blevel\\s*2\\b|\\bsecond\\s*topic\\b|소주제|하위\\s*주제)\\s*(?:[:\\-]|은|는|이야|야)?\\s*([^\\n]+)"
-    );
-
     private final ConversationTreeAiService conversationTreeAiService;
+    private final AiPreProcessorService aiPreProcessorService;
 
-    public TreePlan planNode(List<ChatMessage> roomHistory, ChatMessage parentAiNode, int currentDepth, String userMessage) {
-        List<ChatMessage> orderedHistory = ordered(roomHistory);
+    // 🎯 [에러 해결] 파라미터 타입 완벽 일치! ChatService가 확정해서 넘겨준 String 2개를 그대로 받습니다.
+    public TreePlan planNode(String level1Topic, String level2Topic, int currentDepth, String userMessage) {
         String normalizedMessage = normalize(userMessage);
-
-        String level1Topic = resolveLevel1Topic(orderedHistory, currentDepth, normalizedMessage);
-        String level2Topic = resolveLevel2Topic(orderedHistory, parentAiNode, currentDepth, normalizedMessage, level1Topic);
 
         String nodeTitle;
         if (currentDepth <= 0) {
             nodeTitle = level1Topic;
-        } else if (currentDepth == 1) {
-            nodeTitle = level2Topic;
         } else {
+            // 🚨 기둥(Depth 1)이든 자식(Depth 2)이든 상관없이 무조건 유저 질문(userMessage) 기반으로 간판 제작!
             nodeTitle = resolveDeepNodeTitle(normalizedMessage, level1Topic, level2Topic, currentDepth);
         }
 
         nodeTitle = trimToLength(defaultIfBlank(nodeTitle, summarize(normalizedMessage, TITLE_LIMIT)), TITLE_LIMIT);
-        level1Topic = trimToLength(defaultIfBlank(level1Topic, "루트 주제"), TOPIC_LIMIT);
-        level2Topic = trimToLength(defaultIfBlank(level2Topic, "소주제"), TOPIC_LIMIT);
+        String l1 = trimToLength(defaultIfBlank(level1Topic, "루트 주제"), TOPIC_LIMIT);
+        String l2 = trimToLength(defaultIfBlank(level2Topic, "소주제"), TOPIC_LIMIT);
 
-        return new TreePlan(nodeTitle, level1Topic, level2Topic);
+        return new TreePlan(nodeTitle, l1, l2);
     }
 
     public List<String> extractSeedSubtopics(String userMessage) {
-        if (!isNotBlank(userMessage)) {
-            return List.of();
+        if (!isNotBlank(userMessage)) return List.of();
+        TopicExtractionResponse extracted = aiPreProcessorService.parseUserInput(userMessage);
+        List<String> minors = extracted.minorTopics();
+        if (minors == null || minors.isEmpty()) return List.of();
 
-        }
-
-        Matcher matcher = SUB_PATTERN.matcher(userMessage);
-        if (!matcher.find()) {
-            return List.of();
-        }
-
-        String raw = matcher.group(1);
-        if (!isNotBlank(raw)) {
-            return List.of();
-        }
-
-        LinkedHashSet<String> deduplicated = new LinkedHashSet<>();
-        for (String token : raw.split(",|/|\\||;|\\band\\b|그리고|및")) {
-            String cleaned = normalize(token)
-                    .replaceAll("^[-*\\d.\\s]+", "")
-                    .replaceAll("[.!?]+$", "")
-                    .replaceAll("(?:이야|야|입니다|이에요|이고|고)$", "")
-                    .trim();
-            if (cleaned.length() >= 2) {
-                deduplicated.add(cleaned);
-            }
-        }
-        return deduplicated.stream().limit(10).toList();
+        return minors.stream()
+                .map(token -> normalize(token).replaceAll("^[-*\\d.\\s]+", "").replaceAll("[.!?]+$", "").trim())
+                .filter(cleaned -> cleaned.length() >= 2).limit(10).toList();
     }
 
-    private List<ChatMessage> ordered(List<ChatMessage> roomHistory) {
-        if (roomHistory == null || roomHistory.isEmpty()) {
-            return List.of();
-        }
-        return roomHistory.stream()
-                .sorted(Comparator.comparing(ChatMessage::getCreatedAt)
-                        .thenComparing(ChatMessage::getId, Comparator.nullsLast(Long::compareTo)))
-                .toList();
+    public boolean isGenericSubtopic(String topic) {
+        if (topic == null || topic.isBlank()) return true;
+        String cleaned = topic.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+        return cleaned.contains("방법") || cleaned.contains("준비") || cleaned.contains("활용")
+                || cleaned.contains("개념") || cleaned.contains("특징") || cleaned.contains("이해")
+                || cleaned.contains("기초") || cleaned.contains("기본") || cleaned.contains("소개");
     }
 
-    private String resolveLevel1Topic(List<ChatMessage> history, int depth, String currentMessage) {
-        if (depth == 0) {
-            String explicit = extract(ROOT_PATTERN, currentMessage);
-            if (isNotBlank(explicit)) {
-                return explicit;
-            }
-            return aiLabel(
-                    "Task: create level-1 root topic.\nUser message: " + currentMessage,
-                    summarize(currentMessage, TOPIC_LIMIT),
-                    TOPIC_LIMIT
-            );
-        }
-
-        return history.stream()
-                .filter(this::isUserMessage)
-                .filter(message -> message.getDepth() == 0)
-                .map(ChatMessage::getLevel1Topic)
-                .filter(this::isNotBlank)
-                .findFirst()
-                .orElseGet(() -> summarize(currentMessage, TOPIC_LIMIT));
-    }
-
-    private String resolveLevel2Topic(List<ChatMessage> history, ChatMessage parentAiNode, int depth, String currentMessage, String level1Topic) {
-        if (depth == 1) {
-            String explicit = extract(SUB_PATTERN, currentMessage);
-            if (isNotBlank(explicit)) {
-                return explicit;
-            }
-            return aiLabel(
-                    "Task: create level-2 subtopic under level-1 topic.\nLevel-1 topic: " + level1Topic + "\nUser message: " + currentMessage,
-                    summarize(currentMessage, TOPIC_LIMIT),
-                    TOPIC_LIMIT
-            );
-        }
-
-        ChatMessage branchDepthOneUser = findBranchDepthOneUser(parentAiNode);
-        if (branchDepthOneUser != null) {
-            if (isNotBlank(branchDepthOneUser.getLevel2Topic())) {
-                return branchDepthOneUser.getLevel2Topic();
-            }
-            return summarize(branchDepthOneUser.getContent(), TOPIC_LIMIT);
-        }
-
-        return history.stream()
-                .filter(this::isUserMessage)
-                .filter(message -> message.getDepth() == 1)
-                .map(message -> defaultIfBlank(message.getLevel2Topic(), message.getNodeTitle()))
-                .filter(this::isNotBlank)
-                .findFirst()
-                .orElse(depth == 0 ? "소주제" : summarize(currentMessage, TOPIC_LIMIT));
-    }
-
-    private ChatMessage findBranchDepthOneUser(ChatMessage parentAiNode) {
-        ChatMessage cursor = parentAiNode;
-        while (cursor != null) {
-            ChatMessage userParent = cursor.getParent();
-            if (userParent == null) {
-                return null;
-            }
-            if (userParent.getDepth() == 1) {
-                return userParent;
-            }
-            cursor = userParent.getParent();
-        }
-        return null;
-    }
-
-    private String resolveDeepNodeTitle(String currentMessage, String level1Topic, String level2Topic, int depth) {
-        return aiLabel(
-                "Task: create conversation-tree node title for depth >= 2.\n"
-                        + "Level-1 topic: " + level1Topic + "\n"
-                        + "Level-2 topic: " + level2Topic + "\n"
-                        + "Depth: " + depth + "\n"
-                        + "User message: " + currentMessage,
-                summarize(currentMessage, TITLE_LIMIT),
-                TITLE_LIMIT
-        );
-    }
-
-    private String aiLabel(String prompt, String fallback, int limit) {
+    public String aiLabelForSubtopicMatch(String prompt) {
         try {
-            String raw = conversationTreeAiService.generateNodeLabel(prompt);
-            String cleaned = cleanModelOutput(raw);
-            if (isNotBlank(cleaned)) {
-                return trimToLength(cleaned, limit);
-            }
-        } catch (Exception ignored) {
-        }
+            return cleanModelOutput(conversationTreeAiService.selectBestSubtopic(prompt));
+        } catch (Exception ignored) { return "NONE"; }
+    }
+
+    public String resolveDeepNodeTitle(String currentMessage, String level1Topic, String level2Topic, int depth) {
+        // 🎯 앵무새 방지 및 AI 지식 개입 원천 차단 프롬프트
+        String faithfulPrompt = "Task: Extract and format the core keyword strictly from the User Message into a short Korean noun phrase.\n"
+                + "CRITICAL RULES:\n"
+                + "1. DO NOT invent broad categories (like '알고리즘', '운영체제').\n"
+                + "2. ONLY use the exact specific words present in the User Message.\n"
+                + "3. Format it nicely as a noun phrase (e.g., '데드락 예시', '동기화 개념').\n"
+                + "4. Output a clean 1-3 word noun phrase (Max 15 chars).\n"
+                + "User Message: " + currentMessage;
+
+        return aiLabel(faithfulPrompt, summarize(currentMessage, TITLE_LIMIT), TITLE_LIMIT);
+    }
+
+    public String aiLabel(String prompt, String fallback, int limit) {
+        try {
+            String cleaned = cleanModelOutput(conversationTreeAiService.generateNodeLabel(prompt));
+            if (isNotBlank(cleaned)) return trimToLength(cleaned, limit);
+        } catch (Exception ignored) {}
         return trimToLength(defaultIfBlank(fallback, "Untitled"), limit);
     }
 
-    private String extract(Pattern pattern, String text) {
-        if (!isNotBlank(text)) {
-            return "";
-        }
-        Matcher matcher = pattern.matcher(text);
-        if (!matcher.find()) {
-            return "";
-        }
-        return normalize(matcher.group(1));
-    }
+    private String cleanModelOutput(String text) { if (!isNotBlank(text)) return ""; String firstLine = text.split("\\R", 2)[0]; return normalize(firstLine).replaceAll("^[-*\\d.\\s`\"']+", "").replaceAll("[`\"']+$", ""); }
+    private String summarize(String text, int limit) { return trimToLength(normalize(text), limit); }
+    private String trimToLength(String text, int maxLength) { if (!isNotBlank(text)) return ""; String normalized = text.trim(); if (normalized.length() <= maxLength) return normalized; if (maxLength <= 3) return normalized.substring(0, maxLength); return normalized.substring(0, maxLength - 3).trim() + "..."; }
+    private String defaultIfBlank(String text, String fallback) { return isNotBlank(text) ? text.trim() : fallback; }
+    private boolean isNotBlank(String text) { return text != null && !text.trim().isEmpty(); }
+    private String normalize(String text) { if (text == null) return ""; return text.replaceAll("\\s+", " ").trim(); }
 
-    private boolean isUserMessage(ChatMessage message) {
-        return message != null && message.getSender() == SenderRole.USER;
-    }
-
-    private String cleanModelOutput(String text) {
-        if (!isNotBlank(text)) {
-            return "";
-        }
-        String firstLine = text.split("\\R", 2)[0];
-        return normalize(firstLine)
-                .replaceAll("^[-*\\d.\\s`\"']+", "")
-                .replaceAll("[`\"']+$", "");
-    }
-
-    private String summarize(String text, int limit) {
-        return trimToLength(normalize(text), limit);
-    }
-
-    private String trimToLength(String text, int maxLength) {
-        if (!isNotBlank(text)) {
-            return "";
-        }
-        String normalized = text.trim();
-        if (normalized.length() <= maxLength) {
-            return normalized;
-        }
-        if (maxLength <= 3) {
-            return normalized.substring(0, maxLength);
-        }
-        return normalized.substring(0, maxLength - 3).trim() + "...";
-    }
-
-    private String defaultIfBlank(String text, String fallback) {
-        return isNotBlank(text) ? text.trim() : fallback;
-    }
-
-    private boolean isNotBlank(String text) {
-        return text != null && !text.trim().isEmpty();
-    }
-
-    private String normalize(String text) {
-        if (text == null) {
-            return "";
-        }
-        return text.replaceAll("\\s+", " ").trim();
-    }
-
-    public record TreePlan(String nodeTitle, String level1Topic, String level2Topic) {
-    }
+    public record TreePlan(String nodeTitle, String level1Topic, String level2Topic) {}
 }

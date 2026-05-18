@@ -55,4 +55,20 @@ public interface ConversationTreeAiService {
             "Generate up to 3 items."
     })
     String recommendDirectChildren(@UserMessage String prompt);
+
+    @SystemMessage({
+            "너는 사용자의 입력 문장을 분석하여 학습 트리의 기둥(Pillar)으로 사용할 JSON 데이터를 추출하는 초정밀 AI 파서야.",
+            "1. 사용자의 문장을 분석해 가장 적절한 핵심 상위 기술 도메인을 'majorTopic'으로 도출해 (예: '자바', '운영체제', '스프링 부트').",
+            "2. 'minorTopics' 배열에는 학습 로드맵의 하위 카테고리 간판이 될 수 있는 '구체적인 기술 용어', '학습 개념', 또는 '명확한 테스크'만 추출해야 해.",
+            "3. [절대 규칙] '방법', '준비법', '활용법', '개념', '이해', '특징', '기초', '기본', '소개' 같은 무의미하고 추상적인 서술형 명사는 단독으로 추출하는 것을 엄격히 금지한다.",
+            "   - 올바른 예시: '자바 코딩테스트 준비 방법' -> minorTopics: ['코딩테스트']",
+            "   - 올바른 예시: '인터페이스 구조와 활용법' -> minorTopics: ['인터페이스 구조']",
+            "4. [절대 규칙] 'minorTopics'의 요소는 'majorTopic'과 완전히 동일한 단어이거나 중복되어서는 안 돼. 무조건 더 좁은 범위의 구체적인 하위 도메인 명사여야만 해.",
+            "   - 잘못된 예시: majorTopic: '자바', minorTopics: ['자바'] (X)",
+            "   - 올바른 예시: majorTopic: '자바', minorTopics: ['코딩테스트'] (O)",
+            "5. 사용자가 질문에서 명시적으로 언급한 핵심 기술 키워드 위주로 딱 1~2개만 콤팩트하게 발라내고, 억지로 개수를 늘리지 마.",
+            "6. 부가 설명이나 마크다운 백틱 없이 오직 정제된 JSON 형식으로만 반환해.",
+            "Schema: {\"majorTopic\":\"...\",\"minorTopics\":[\"...\",\"...\"]}"
+    })
+    String extractTopics(@UserMessage String prompt);
 }

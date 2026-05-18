@@ -2,6 +2,7 @@ package com.rabbit.domain.chat.service;
 
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -11,9 +12,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ContextSimilarityService {
@@ -30,16 +33,62 @@ public class ContextSimilarityService {
 
     private final EmbeddingModel embeddingModel;
 
-    public double score(String query, String topic, List<String> samples) {
+    // =====================================================================
+    // 🚀 [초고속 밸런스 패치] 외부 API 캐싱을 위한 신규 오버로딩 엔진 레이어
+    // =====================================================================
+
+    /**
+     * 🌟 유저 질문 문장을 백엔드 루프 직전에 '딱 한 번만' 벡터 데이터로 변환합니다.
+     */
+    public dev.langchain4j.data.embedding.Embedding embedQuery(String query) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        return embeddingModel.embed(query).content();
+    }
+
+    /**
+     * 🌟 [오버로딩] 이미 구워온 유저 질문 벡터(Embedding)를 재사용하여 네트워크 통신을 0회로 줄이는 핵심 score 메서드
+     */
+    public double score(dev.langchain4j.data.embedding.Embedding queryEmbedding, String topic, List<String> samples, String rawQuery) {
         List<String> merged = merge(topic, samples);
-        double heuristic = heuristicScore(query, merged);
+
+        // 글자 매칭(Heuristic)은 원본 String 문장이 필요하므로 rawQuery 전달
+        double heuristic = heuristicScore(rawQuery, merged);
+
+        if (queryEmbedding == null) {
+            return heuristic;
+        }
+
         try {
-            double embedding = embeddingScore(query, merged);
+            // 외부 네트워크 호출 없이 내부 메모리 배열 연산으로 즉시 점수 매김
+            double embedding = embeddingScore(queryEmbedding, merged);
             return (embedding * 0.75) + (heuristic * 0.25);
         } catch (Exception ignored) {
             return heuristic;
         }
     }
+
+    /**
+     * 🌟 [오버로딩] 구워진 벡터 전용 내부 유사도 연산기 (루프 내부에서 통신 병목을 완전히 제거함)
+     */
+    private double embeddingScore(dev.langchain4j.data.embedding.Embedding queryEmbedding, List<String> samples) {
+        String branchText = String.join("\n", samples);
+        if (branchText.isBlank()) {
+            return 0.0;
+        }
+
+        // 유저 질문 벡터는 파라미터로 주입받은 값(캐시)을 그대로 사용하여 외부 API 호출 차단!
+        float[] queryVector = queryEmbedding.vector();
+
+        // 대상 기둥 문장 세트는 루프 돌 때 한 번만 임베딩 처리
+        float[] branchVector = embeddingModel.embed(branchText).content().vector();
+        return cosineSimilarity(queryVector, branchVector);
+    }
+
+    // =====================================================================
+    // 📦 기존 서비스 유지보수용 레거시 메서드 (타 기능 깨짐 방지용)
+    // =====================================================================
 
     public double relationshipScore(String query, List<String> contextSamples) {
         double heuristic = heuristicScore(query, contextSamples);

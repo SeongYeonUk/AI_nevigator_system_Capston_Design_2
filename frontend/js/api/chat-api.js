@@ -101,7 +101,13 @@ export async function requestAssistantTurn({ roomId, message, parentId, token })
   return askChatApi({ roomId, parentId, message, token });
 }
 
-export function getNodeInsightApi(nodeId, token = "") { // 인사이트 API 추가
+export function getNodeInsightApi(nodeId, token = "") { 
+  // 🚨 [가드레일] nodeId가 없거나, 화면용 가상 ID('n_'으로 시작)라면 백엔드에 요청을 보내지 않음
+  if (!nodeId || String(nodeId).startsWith("n_")) {
+    console.log(`[API Guard] 임시 노드(${nodeId})이므로 인사이트 조회를 스킵합니다.`);
+    return Promise.resolve(null); // 백엔드 에러 대신 빈 응답을 즉시 반환
+  }
+
   return request(`/api/chat/node/${nodeId}/insight`, { method: "GET" }, token);
 }
 
