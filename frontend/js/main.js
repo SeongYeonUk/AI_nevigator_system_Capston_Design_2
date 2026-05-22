@@ -4952,8 +4952,8 @@ function getGraphRenderOptions() {
     minBoxWidth: Math.round(158 * scale),
     maxCharsPerLine: Math.max(12, Math.floor(20 * scale)),
     horizontalPadding: Math.round((isBox ? 30 : 18) * scale),
-    verticalPadding: Math.round((isBox ? 18 : 12) * scale),
-    lineHeight: Math.round((isBox ? 22 : 17) * scale),
+    verticalPadding: Math.round((isBox ? 10 : 12) * scale),
+    lineHeight: Math.round((isBox ? 17 : 15) * scale),
     fontSize: Math.round((isBox ? 16 : 13) * scale),
     cornerRadius: Math.round(12 * scale)
   };
@@ -5131,7 +5131,7 @@ function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCoun
   const tree = buildTree(nodes);
   const roots = tree.filter((node) => node.parentId === null);
   const xGap = Math.round((options.semanticCompact ? 46 : (options.shape === "box" ? 18 : 44)) * options.scale);
-  const yGap = Math.round((options.semanticCompact ? 78 : (options.shape === "box" ? 76 : 98)) * options.scale);
+  const yGap = Math.round((options.semanticCompact ? 78 : (options.shape === "box" ? 91 : 98)) * options.scale);
   const margin = Math.round((options.shape === "box" ? 24 : 34) * options.scale);
   const placed = [];
 
