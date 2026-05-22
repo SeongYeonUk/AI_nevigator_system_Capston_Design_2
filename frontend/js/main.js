@@ -42,8 +42,7 @@ let lastGraphNodePointerDown = {
 const UI_THEME_STORAGE_KEY = "pathlearn.uiTheme";
 const UI_THEME_IDS = new Set(["default", "mist", "sage", "lavender"]);
 const GRAPH_ZOOM_PRESETS = [
-  0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
-  1, 1.1, 1.2, 1.3, 1.4
+  0.4, 1, 1.1, 1.2, 1.3, 1.4
 ];
 
 const state = {
@@ -525,14 +524,12 @@ function createGraphTreeDragPreview(nodeId) {
     return null;
   }
 
-  const nodeGroups = [...sourceSvg.querySelectorAll(".tree-node-group[data-node-id]")]
-    .filter((group) => subtreeIds.has(group.dataset.nodeId));
-  if (!nodeGroups.length) {
+  const sourceGroup = [...sourceSvg.querySelectorAll(".tree-node-group[data-node-id]")]
+    .find((group) => group.dataset.nodeId === String(nodeId));
+  if (!sourceGroup || !subtreeIds.size) {
     return null;
   }
-
-  const relevantLinks = [...sourceSvg.querySelectorAll(".tree-link[data-source-id][data-target-id]")]
-    .filter((link) => subtreeIds.has(link.dataset.sourceId) && subtreeIds.has(link.dataset.targetId));
+  const nodeGroups = [sourceGroup];
 
   const bounds = nodeGroups.reduce((acc, group) => {
     const shape = group.querySelector(".tree-node-circle, .tree-node-box");
@@ -561,7 +558,6 @@ function createGraphTreeDragPreview(nodeId) {
     return acc;
   }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
 
-  const sourceGroup = nodeGroups.find((group) => group.dataset.nodeId === String(nodeId)) || nodeGroups[0];
   const sourceShape = sourceGroup?.querySelector(".tree-node-circle, .tree-node-box");
 
   const padding = 14;
@@ -578,20 +574,12 @@ function createGraphTreeDragPreview(nodeId) {
   svg.setAttribute("width", String(normalizedWidth));
   svg.setAttribute("height", String(normalizedHeight));
 
-  relevantLinks.forEach((link) => {
-    const clone = link.cloneNode(true);
-    clone.setAttribute("x1", String((Number(link.getAttribute("x1")) || 0) - minX));
-    clone.setAttribute("y1", String((Number(link.getAttribute("y1")) || 0) - minY));
-    clone.setAttribute("x2", String((Number(link.getAttribute("x2")) || 0) - minX));
-    clone.setAttribute("y2", String((Number(link.getAttribute("y2")) || 0) - minY));
-    clone.setAttribute("class", "tree-drag-preview-link");
-    svg.appendChild(clone);
-  });
-
   nodeGroups.forEach((group) => {
     const clone = group.cloneNode(true);
     clone.setAttribute("class", "tree-node-group");
     clone.querySelectorAll(".tree-node-hidden-badge").forEach((badge) => badge.remove());
+    clone.querySelectorAll(".tree-node-depth-shadow").forEach((shadow) => shadow.remove());
+    clone.querySelectorAll(".tree-node-important-marker").forEach((marker) => marker.remove());
     clone.querySelectorAll(".tree-node-circle").forEach((shape) => {
       shape.setAttribute("cx", String((Number(shape.getAttribute("cx")) || 0) - minX));
       shape.setAttribute("cy", String((Number(shape.getAttribute("cy")) || 0) - minY));
@@ -1833,7 +1821,7 @@ function renderTree() {
     return;
   }
 
-  if (state.treeViewMode === "graph" && state.treeFocusMode && typeof window.cytoscape === "function" && !state.graphResizeMode) {
+  if (state.treeViewMode === "graph" && state.treeFocusMode && typeof window.cytoscape === "function") {
     renderCytoscapeFocusGraph(treeNodes);
   } else if (state.treeViewMode === "graph") {
     renderTreeGraph(treeNodes);
@@ -2222,6 +2210,12 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
         }
       },
       {
+        selector: "edge.dragging-edge",
+        style: {
+          opacity: 0.08
+        }
+      },
+      {
         selector: "node[depth = 0], node.root",
         style: {
           "font-size": isCircleFocus ? 15 : 16,
@@ -2264,6 +2258,7 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
     const sourceId = event.target.id();
     clearCytoscapeDropState(focusCytoscape);
     event.target.addClass("dragging");
+    event.target.connectedEdges().addClass("dragging-edge");
     state.dragState.active = true;
     state.dragState.sourceNodeId = sourceId;
   });
@@ -2281,6 +2276,7 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
   focusCytoscape.on("free", "node", (event) => {
     const sourceId = event.target.id();
     const target = getCytoscapeDropTarget(focusCytoscape, sourceId);
+    event.target.connectedEdges().removeClass("dragging-edge");
     clearCytoscapeDropState(focusCytoscape);
     state.dragState.active = false;
     state.dragState.sourceNodeId = null;
@@ -2338,20 +2334,18 @@ function renderTreeGraph(nodes = state.nodes) {
 
   if (state.treeFocusMode) {
     renderProfessionalGraphBackdrop(svg, graph, svgNS);
+  } else {
+    renderStandardGraphBackdrop(svg, graph, svgNS);
   }
 
   graph.links.forEach((link) => {
     const linkElement = state.treeFocusMode
       ? createProfessionalTreeLink(link, svgNS)
-      : document.createElementNS(svgNS, "line");
+      : createStandardTreeLink(link, svgNS);
     if (!state.treeFocusMode) {
-      linkElement.setAttribute("x1", String(link.x1));
-      linkElement.setAttribute("y1", String(link.y1));
-      linkElement.setAttribute("x2", String(link.x2));
-      linkElement.setAttribute("y2", String(link.y2));
       linkElement.setAttribute("stroke", getComputedStyle(document.body).getPropertyValue("--node-stroke").trim() || "#7aa7bf");
       linkElement.setAttribute("stroke-width", "2.4");
-      linkElement.setAttribute("opacity", "0.95");
+      linkElement.setAttribute("opacity", "0.82");
     } else {
       linkElement.setAttribute("stroke", getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#37c6a5");
       linkElement.setAttribute("stroke-width", "3.2");
@@ -2387,6 +2381,15 @@ function renderTreeGraph(nodes = state.nodes) {
     }
     const shapeClass = node.visualShape === "box" || node.visualShape === "mini-box" ? "tree-node-box" : "tree-node-circle";
     shape.setAttribute("class", node.id === state.selectedNodeId ? `${shapeClass} active` : shapeClass);
+    const nodeShadow = shape.cloneNode(false);
+    nodeShadow.setAttribute("class", node.visualShape === "box" || node.visualShape === "mini-box"
+      ? "tree-node-depth-shadow tree-node-depth-shadow-box"
+      : "tree-node-depth-shadow tree-node-depth-shadow-circle");
+    if (node.visualShape === "box" || node.visualShape === "mini-box") {
+      nodeShadow.setAttribute("y", String(node.y - node.height / 2 + 4));
+    } else {
+      nodeShadow.setAttribute("cy", String(node.y + 4));
+    }
     const emphasizeNode = () => {
       shape.classList.add("hovered");
       if (node.visualShape !== "box" && node.visualShape !== "mini-box") {
@@ -2416,6 +2419,7 @@ function renderTreeGraph(nodes = state.nodes) {
       handleTreeDragHover(null);
       hideTreeTooltip(treeTooltip);
     });
+    nodeGroup.appendChild(nodeShadow);
     nodeGroup.appendChild(shape);
 
     if (node.showLabel) {
@@ -2545,6 +2549,50 @@ function renderProfessionalGraphBackdrop(svg, graph, svgNS) {
     band.setAttribute("class", depth % 2 === 0 ? "professional-depth-band" : "professional-depth-band alt");
     svg.appendChild(band);
   }
+}
+
+function renderStandardGraphBackdrop(svg, graph, svgNS) {
+  const defs = document.createElementNS(svgNS, "defs");
+
+  const glow = document.createElementNS(svgNS, "filter");
+  glow.setAttribute("id", "standardGraphNodeGlow");
+  glow.setAttribute("x", "-35%");
+  glow.setAttribute("y", "-35%");
+  glow.setAttribute("width", "170%");
+  glow.setAttribute("height", "170%");
+
+  const drop = document.createElementNS(svgNS, "feDropShadow");
+  drop.setAttribute("dx", "0");
+  drop.setAttribute("dy", "5");
+  drop.setAttribute("stdDeviation", "4");
+  drop.setAttribute("flood-color", "currentColor");
+  drop.setAttribute("flood-opacity", "0.18");
+  glow.appendChild(drop);
+  defs.appendChild(glow);
+  svg.appendChild(defs);
+
+  const rootNode = graph.nodes.find((node) => Number(node.depth) === 0);
+  if (rootNode) {
+    const halo = document.createElementNS(svgNS, "ellipse");
+    halo.setAttribute("cx", String(rootNode.x));
+    halo.setAttribute("cy", String(rootNode.y));
+    halo.setAttribute("rx", String(Math.max(rootNode.width * 1.2, 86)));
+    halo.setAttribute("ry", String(Math.max(rootNode.height * 1.1, 46)));
+    halo.setAttribute("class", "tree-root-halo");
+    svg.appendChild(halo);
+  }
+}
+
+function createStandardTreeLink(link, svgNS) {
+  const path = document.createElementNS(svgNS, "path");
+  const verticalDistance = Math.max(20, Math.abs(link.y2 - link.y1));
+  const midY = link.y1 + verticalDistance * 0.5;
+  path.setAttribute("d", `M ${link.x1} ${link.y1} C ${link.x1} ${midY}, ${link.x2} ${midY}, ${link.x2} ${link.y2}`);
+  path.setAttribute("class", "tree-link tree-link-polished");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  return path;
 }
 
 function createProfessionalTreeLink(link, svgNS) {
@@ -3527,7 +3575,7 @@ async function renderInsights() {
     if (el.treeEditHint) el.treeEditHint.textContent = "노드를 다른 노드 위로 드래그하면 해당 노드의 자식으로 이동합니다.";
     if (el.depthBar) {
       el.depthBar.style.width = "10%";
-      el.depthBar.style.background = "linear-gradient(90deg, #43dab8, #62b4d8)";
+      el.depthBar.style.background = "var(--control-active-bg)";
     }
     if (el.driftAlert) {
       el.driftAlert.textContent = "질문을 입력하면 학습 경로가 시작됩니다.";
@@ -5173,13 +5221,13 @@ function applyInsightDepthUi(depthValue, node = null) {
   if (el.depthBar) {
     el.depthBar.style.width = `${ratio}%`;
     el.depthBar.style.background = isDepthOverLimit
-      ? "linear-gradient(90deg, #f7d16a, #ff8d7a)"
-      : "linear-gradient(90deg, #43dab8, #62b4d8)";
+      ? "linear-gradient(90deg, var(--warning), var(--danger))"
+      : "var(--control-active-bg)";
   }
 
   if (depthNotice) {
     if (depthNotice.type === "strong" && el.depthBar) {
-      el.depthBar.style.background = "linear-gradient(90deg, #ffb36a, #ff6f91)";
+      el.depthBar.style.background = "linear-gradient(90deg, var(--warning), var(--danger))";
     }
     if (el.driftAlert) {
       el.driftAlert.textContent = depthNotice.message;
@@ -5452,6 +5500,10 @@ function setTreeFocusMode(enabled) {
   state.treeFocusMode = Boolean(enabled);
   if (state.treeFocusMode && state.treeViewMode !== "graph") {
     state.treeViewMode = "graph";
+  }
+  if (state.treeFocusMode) {
+    state.graphResizeMode = false;
+    state.focusGraphLayout = "mindmap";
   }
   document.body.classList.toggle("tree-focus-active", state.currentView === "app" && state.treeFocusMode);
   render();
