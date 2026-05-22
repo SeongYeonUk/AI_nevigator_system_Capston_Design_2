@@ -25,6 +25,11 @@ if (typeof window !== "undefined") {
 
 let transparentDragImage = null;
 let graphNodeClickTimer = null;
+let focusCytoscape = null;
+let lastCytoscapeTap = {
+  nodeId: null,
+  time: 0
+};
 let treeGraphResizeFrame = null;
 let lastTreeGraphResizeKey = "";
 let lastGraphNodePointerDown = {
@@ -47,10 +52,13 @@ const state = {
   uiTheme: loadUiTheme(),
   treeViewMode: "list",
   graphZoom: 1,
+  graphScopeMode: "range",
+  focusGraphLayout: "mindmap",
   graphNodeShape: "circle",
   graphNodeSizeScale: 1,
   graphTreeScale: 1,
   graphResizeMode: false,
+  treeFocusMode: false,
   graphNodeSizeById: new Map(),
   collapsedGraphNodeIds: new Set(),
   importantNodeIds: new Set(),
@@ -151,6 +159,8 @@ const el = {
   treeRoot: document.getElementById("treeRoot"),
   treeListModeBtn: document.getElementById("treeListModeBtn"),
   treeGraphModeBtn: document.getElementById("treeGraphModeBtn"),
+  treeFocusModeBtn: document.getElementById("treeFocusModeBtn"),
+  treeFocusCloseBtn: document.getElementById("treeFocusCloseBtn"),
   nodeCount: document.getElementById("nodeCount"),
   graphZoomInBtn: document.getElementById("graphZoomInBtn"),
   graphZoomOutBtn: document.getElementById("graphZoomOutBtn"),
@@ -161,6 +171,8 @@ const el = {
   treeBuildStatus: document.getElementById("treeBuildStatus"),
   graphCircleShapeBtn: document.getElementById("graphCircleShapeBtn"),
   graphBoxShapeBtn: document.getElementById("graphBoxShapeBtn"),
+  focusMindmapBtn: document.getElementById("focusMindmapBtn"),
+  focusTreeBtn: document.getElementById("focusTreeBtn"),
   graphTreeScaleInBtn: document.getElementById("graphTreeScaleInBtn"),
   graphTreeScaleOutBtn: document.getElementById("graphTreeScaleOutBtn"),
   graphTreeScaleLevel: document.getElementById("graphTreeScaleLevel"),
@@ -272,12 +284,16 @@ function bindEvents() {
 
   el.treeListModeBtn?.addEventListener("click", () => setTreeViewMode("list"));
   el.treeGraphModeBtn?.addEventListener("click", () => setTreeViewMode("graph"));
+  el.treeFocusModeBtn?.addEventListener("click", toggleTreeFocusMode);
+  el.treeFocusCloseBtn?.addEventListener("click", () => setTreeFocusMode(false));
   el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(1));
   el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-1));
-  el.graphZoomSelect?.addEventListener("change", () => setGraphZoom(Number(el.graphZoomSelect.value) || 1));
+  el.graphZoomSelect?.addEventListener("change", () => setGraphZoom(el.graphZoomSelect.value));
   el.graphZoomResetBtn?.addEventListener("click", resetGraphZoom);
   el.graphCircleShapeBtn?.addEventListener("click", () => setGraphNodeShape("circle"));
   el.graphBoxShapeBtn?.addEventListener("click", () => setGraphNodeShape("box"));
+  el.focusMindmapBtn?.addEventListener("click", () => setFocusGraphLayout("mindmap"));
+  el.focusTreeBtn?.addEventListener("click", () => setFocusGraphLayout("tree"));
   el.graphTreeScaleInBtn?.addEventListener("click", () => changeGraphTreeScale(0.25));
   el.graphTreeScaleOutBtn?.addEventListener("click", () => changeGraphTreeScale(-0.25));
   el.graphResizeModeBtn?.addEventListener("click", toggleGraphResizeMode);
@@ -692,6 +708,7 @@ function clearInsightRelatedCaches() {
 function switchView(view, authTab) {
   state.currentView = view;
   document.body.classList.toggle("app-active", view === "app");
+  document.body.classList.toggle("tree-focus-active", view === "app" && state.treeFocusMode);
 
   el.landingView?.classList.toggle("hidden", view !== "landing");
   el.authView?.classList.toggle("hidden", view !== "auth");
@@ -1769,22 +1786,33 @@ function renderTree() {
     return;
   }
 
+  destroyFocusCytoscape();
   el.treeRoot.innerHTML = "";
   el.treeListModeBtn?.classList.toggle("active", state.treeViewMode === "list");
   el.treeGraphModeBtn?.classList.toggle("active", state.treeViewMode === "graph");
+  el.treeFocusModeBtn?.classList.toggle("active", state.treeFocusMode);
+  if (el.treeFocusModeBtn) {
+    el.treeFocusModeBtn.textContent = "확대";
+  }
+  el.treeFocusCloseBtn?.classList.toggle("hidden", !state.treeFocusMode);
   el.treeRoot.classList.toggle("graph-mode", state.treeViewMode === "graph");
+  el.treeRoot.classList.toggle("focus-graph-mode", state.treeFocusMode && state.treeViewMode === "graph");
   el.graphZoomFooter?.classList.toggle("hidden", state.treeViewMode !== "graph");
   if (el.graphZoomLevel) {
     el.graphZoomLevel.textContent = `${Math.round(state.graphZoom * 100)}%`;
   }
   if (el.graphZoomSelect) {
-    el.graphZoomSelect.value = String(getClosestGraphZoomPreset(state.graphZoom));
+    el.graphZoomSelect.value = state.graphScopeMode === "path"
+      ? "path"
+      : String(getClosestGraphZoomPreset(state.graphZoom));
   }
   if (el.graphTreeScaleLevel) {
     el.graphTreeScaleLevel.textContent = `${Math.round(state.graphTreeScale * 100)}%`;
   }
   el.graphCircleShapeBtn?.classList.toggle("active", state.graphNodeShape === "circle");
   el.graphBoxShapeBtn?.classList.toggle("active", state.graphNodeShape === "box");
+  el.focusMindmapBtn?.classList.toggle("active", state.focusGraphLayout === "mindmap");
+  el.focusTreeBtn?.classList.toggle("active", state.focusGraphLayout === "tree");
   el.graphResizeModeBtn?.classList.toggle("active", state.graphResizeMode);
   renderImportantNodeButton();
   renderTreeBuildStatus();
@@ -1805,7 +1833,9 @@ function renderTree() {
     return;
   }
 
-  if (state.treeViewMode === "graph") {
+  if (state.treeViewMode === "graph" && state.treeFocusMode && typeof window.cytoscape === "function" && !state.graphResizeMode) {
+    renderCytoscapeFocusGraph(treeNodes);
+  } else if (state.treeViewMode === "graph") {
     renderTreeGraph(treeNodes);
   } else {
     renderTreeList(treeNodes);
@@ -1862,6 +1892,421 @@ function renderTreeList(nodes = state.nodes) {
   roots.forEach((node) => el.treeRoot.appendChild(renderTreeNode(node)));
 }
 
+function destroyFocusCytoscape() {
+  if (focusCytoscape) {
+    focusCytoscape.destroy();
+    focusCytoscape = null;
+  }
+}
+
+function getFocusCytoscapeLayout(positions) {
+  return {
+    name: "preset",
+    positions,
+    fit: true,
+    padding: 96,
+    animate: true,
+    animationDuration: 260
+  };
+}
+
+function getFocusMindmapData(visibleNodes, isCircleFocus) {
+  const byId = new Map(visibleNodes.map((node) => [String(node.id), node]));
+  const childrenById = new Map(visibleNodes.map((node) => [String(node.id), []]));
+  visibleNodes.forEach((node) => {
+    const parentId = node.parentId == null ? null : String(node.parentId);
+    if (parentId && childrenById.has(parentId)) {
+      childrenById.get(parentId).push(node);
+    }
+  });
+  childrenById.forEach((children) => children.sort(compareTreeNodeOrder));
+
+  const realRoot = visibleNodes.find((node) => node.parentId == null && Number(node.depth) === 0);
+  const selectedRoot = visibleNodes.find((node) => String(node.id) === String(state.selectedNodeId));
+  const root = realRoot || selectedRoot || visibleNodes.find((node) => node.parentId == null) || visibleNodes[0];
+  if (!root) {
+    return { positions: {}, styles: new Map() };
+  }
+
+  const rootId = String(root.id);
+  const positions = { [rootId]: { x: 0, y: 0 } };
+  const styles = new Map();
+  const palette = [
+    { fill: "#a7e2d8", stroke: "#5aa99b", line: "#678f86" },
+    { fill: "#b7dc79", stroke: "#83aa3a", line: "#71834a" },
+    { fill: "#f1cf62", stroke: "#bd9440", line: "#8f774b" },
+    { fill: "#e88972", stroke: "#bd6555", line: "#80635d" },
+    { fill: "#85b5f6", stroke: "#5b86c5", line: "#63778f" },
+    { fill: "#e4779d", stroke: "#bb5f82", line: "#86636f" },
+    { fill: "#83d0c6", stroke: "#58a398", line: "#668b86" }
+  ];
+  styles.set(rootId, { fill: "#7c58e8", stroke: "#6542cd", line: "#5b5568", side: 0 });
+
+  const countLeaves = (nodeId) => {
+    const children = childrenById.get(nodeId) || [];
+    if (!children.length) {
+      return 1;
+    }
+    return children.reduce((total, child) => total + countLeaves(String(child.id)), 0);
+  };
+
+  const rootChildIds = new Set();
+  const rootChildren = [];
+  [...(childrenById.get(rootId) || []), ...visibleNodes.filter((node) => node.parentId == null && String(node.id) !== rootId)].forEach((node) => {
+    const nodeId = String(node.id);
+    if (!rootChildIds.has(nodeId)) {
+      rootChildIds.add(nodeId);
+      rootChildren.push(node);
+    }
+  });
+  const rightChildren = [];
+  const leftChildren = [];
+  rootChildren.forEach((child, index) => {
+    (index % 2 === 0 ? rightChildren : leftChildren).push(child);
+  });
+  if (!rightChildren.length && leftChildren.length > 1) {
+    rightChildren.push(leftChildren.shift());
+  }
+
+  const xStep = isCircleFocus ? 178 : 230;
+  const rootGap = isCircleFocus ? 195 : 260;
+  const yStep = isCircleFocus ? 104 : 92;
+  const branchGap = isCircleFocus ? 28 : 36;
+
+  const placeSubtree = (node, side, depth, yCenter, ySpan, branchIndex) => {
+    const nodeId = String(node.id);
+    const x = side * (rootGap + Math.max(0, depth - 1) * xStep);
+    positions[nodeId] = { x, y: yCenter };
+    const branchStyle = palette[branchIndex % palette.length];
+    styles.set(nodeId, { ...branchStyle, side });
+
+    const children = childrenById.get(nodeId) || [];
+    if (!children.length) {
+      return;
+    }
+
+    const totalLeaves = children.reduce((sum, child) => sum + countLeaves(String(child.id)), 0);
+    let cursor = yCenter - Math.max(ySpan, totalLeaves * yStep) / 2;
+    children.forEach((child) => {
+      const leaves = countLeaves(String(child.id));
+      const span = Math.max(yStep, leaves * yStep);
+      const childY = cursor + span / 2;
+      placeSubtree(child, side, depth + 1, childY, span, branchIndex);
+      cursor += span + branchGap * 0.35;
+    });
+  };
+
+  const placeSide = (sideChildren, side, topOffset) => {
+    const totalSpan = sideChildren.reduce((sum, child) => sum + countLeaves(String(child.id)) * yStep + branchGap, 0);
+    let cursor = topOffset - totalSpan / 2;
+    sideChildren.forEach((child) => {
+      const branchIndex = rootChildren.findIndex((entry) => String(entry.id) === String(child.id));
+      const span = Math.max(yStep, countLeaves(String(child.id)) * yStep);
+      const childY = cursor + span / 2;
+      placeSubtree(child, side, 1, childY, span, branchIndex);
+      cursor += span + branchGap;
+    });
+  };
+
+  placeSide(rightChildren, 1, 0);
+  placeSide(leftChildren, -1, 0);
+
+  return { positions, styles };
+}
+
+function getCytoscapeDropTarget(cy, sourceId) {
+  const source = cy?.getElementById(String(sourceId));
+  if (!source || source.empty()) {
+    return null;
+  }
+  const position = source.renderedPosition();
+  return cy.nodes()
+    .filter((candidate) => candidate.id() !== String(sourceId))
+    .toArray()
+    .sort((left, right) => {
+      const leftDepth = Number(left.data("depth")) || 0;
+      const rightDepth = Number(right.data("depth")) || 0;
+      return rightDepth - leftDepth;
+    })
+    .find((candidate) => {
+      const box = candidate.renderedBoundingBox({ includeLabels: false, includeOverlays: false });
+      const padding = 18;
+      return (
+        position.x >= box.x1 - padding &&
+        position.x <= box.x2 + padding &&
+        position.y >= box.y1 - padding &&
+        position.y <= box.y2 + padding
+      );
+    }) || null;
+}
+
+function clearCytoscapeDropState(cy) {
+  cy?.nodes().removeClass("dragging drop-target invalid-drop");
+}
+
+function renderCytoscapeFocusGraph(nodes = state.nodes) {
+  const visibleNodes = getZoomScopedGraphNodes(getVisibleGraphNodes(nodes));
+  const hiddenCountMap = getCollapsedHiddenCountMap(nodes);
+  const nodeIds = new Set(visibleNodes.map((node) => String(node.id)));
+  const css = getComputedStyle(document.body);
+  const accent = css.getPropertyValue("--accent").trim() || "#37c6a5";
+  const text = css.getPropertyValue("--text").trim() || "#223845";
+  const muted = css.getPropertyValue("--muted").trim() || "#668294";
+  const surface = css.getPropertyValue("--surface").trim() || "#f8fcfe";
+  const nodeStroke = css.getPropertyValue("--node-stroke").trim() || "#6b9bb5";
+  const selectedFill = css.getPropertyValue("--node-active-fill").trim() || "#d1f3e8";
+  const isCircleFocus = state.graphNodeShape === "circle";
+  const renderOptions = getGraphRenderOptions();
+  const mindmap = getFocusMindmapData(visibleNodes, isCircleFocus);
+
+  const container = document.createElement("div");
+  container.className = `cyto-tree-canvas mindmap-layout ${isCircleFocus ? "circle-layout" : "box-layout"}`;
+  el.treeRoot.appendChild(container);
+
+  const elements = [
+    ...visibleNodes.map((node) => {
+      const depth = Number(node.depth) || 0;
+      const hiddenCount = hiddenCountMap.get(String(node.id)) || 0;
+      const compact = renderOptions.semanticCompact && (renderOptions.labeledDepth < 0 || depth > renderOptions.labeledDepth);
+      const label = compact
+        ? ""
+        : `${getGraphDisplayTitle(node)}${hiddenCount ? `\n+${hiddenCount} 숨김` : ""}`;
+      return {
+        group: "nodes",
+        data: {
+          id: String(node.id),
+          label,
+          depth,
+          compact,
+          hiddenCount,
+          ...mindmap.styles.get(String(node.id)),
+          selected: String(node.id) === String(state.selectedNodeId),
+          important: isImportantNode(node.id),
+          root: node.parentId == null
+        },
+        classes: [
+          String(node.id) === String(state.selectedNodeId) ? "selected" : "",
+          isImportantNode(node.id) ? "important" : "",
+          node.parentId == null ? "root" : "",
+          hiddenCount ? "collapsed" : "",
+          compact ? "compact" : ""
+        ].filter(Boolean).join(" ")
+      };
+    }),
+    ...visibleNodes
+      .filter((node) => node.parentId != null && nodeIds.has(String(node.parentId)))
+      .map((node) => ({
+        group: "edges",
+        data: {
+          id: `${String(node.parentId)}->${String(node.id)}`,
+          source: String(node.parentId),
+          target: String(node.id),
+          color: mindmap.styles.get(String(node.id))?.line || nodeStroke
+        }
+      }))
+  ];
+
+  focusCytoscape = window.cytoscape({
+    container,
+    elements,
+    wheelSensitivity: 0.18,
+    minZoom: 0.18,
+    maxZoom: 2.6,
+    style: [
+      {
+        selector: "node",
+        style: {
+          shape: isCircleFocus ? "ellipse" : "round-rectangle",
+          label: "data(label)",
+          "background-color": "data(fill)",
+          "border-color": "data(stroke)",
+          "border-width": isCircleFocus ? 2.4 : 2,
+          color: text,
+          "font-size": isCircleFocus ? 13 : 15,
+          "font-weight": 800,
+          "text-wrap": "wrap",
+          "text-max-width": isCircleFocus ? 78 : 185,
+          "text-valign": "center",
+          "text-halign": "center",
+          width: isCircleFocus ? 82 : "label",
+          height: isCircleFocus ? 82 : "label",
+          padding: isCircleFocus ? "8px" : "15px",
+          "min-width": isCircleFocus ? 82 : 132,
+          "min-height": isCircleFocus ? 82 : 38,
+          "shadow-blur": 10,
+          "shadow-color": "data(stroke)",
+          "shadow-opacity": 0.12,
+          "shadow-offset-y": 4,
+          "overlay-opacity": 0,
+          "transition-property": "background-color, border-color, width, height, opacity",
+          "transition-duration": "140ms"
+        }
+      },
+      {
+        selector: "node:selected, node.selected",
+        style: {
+          "background-color": selectedFill,
+          "border-color": accent,
+          "border-width": 4,
+          "shadow-blur": isCircleFocus ? 24 : 18,
+          "shadow-color": accent,
+          "shadow-opacity": 0.35,
+          "shadow-offset-y": 8
+        }
+      },
+      {
+        selector: "node.important",
+        style: {
+          "border-color": "#f0b94f",
+          "border-style": "double",
+          "border-width": 4
+        }
+      },
+      {
+        selector: "node.compact",
+        style: {
+          label: "",
+          width: isCircleFocus ? 28 : 34,
+          height: isCircleFocus ? 28 : 20,
+          padding: "0px",
+          "min-width": isCircleFocus ? 28 : 34,
+          "min-height": isCircleFocus ? 28 : 20,
+          "border-width": isCircleFocus ? 2 : 1.6,
+          opacity: 0.82
+        }
+      },
+      {
+        selector: "node.dragging",
+        style: {
+          opacity: 0.78,
+          "border-style": "dashed",
+          "z-index": 90
+        }
+      },
+      {
+        selector: "node.drop-target",
+        style: {
+          "background-color": selectedFill,
+          "border-color": accent,
+          "border-width": 5,
+          "shadow-blur": 22,
+          "shadow-color": accent,
+          "shadow-opacity": 0.42
+        }
+      },
+      {
+        selector: "node.invalid-drop",
+        style: {
+          "border-color": "#d46b62",
+          "border-width": 4
+        }
+      },
+      {
+        selector: "node.collapsed",
+        style: {
+          "background-blacken": -0.05,
+          "text-outline-color": surface,
+          "text-outline-width": 1
+        }
+      },
+      {
+        selector: "edge",
+        style: {
+          width: 3.2,
+          "line-color": "data(color)",
+          "target-arrow-color": "data(color)",
+          "target-arrow-shape": "none",
+          "curve-style": "bezier",
+          opacity: 0.78,
+          "z-index": 1
+        }
+      },
+      {
+        selector: "node[depth = 0], node.root",
+        style: {
+          "font-size": isCircleFocus ? 15 : 16,
+          "background-color": "#7c58e8",
+          "border-color": "#6542cd",
+          color: "#ffffff",
+          "border-width": 3,
+          ...(isCircleFocus ? { width: 108, height: 108 } : { "min-width": 182, "min-height": 50 })
+        }
+      },
+      {
+        selector: "node.compact",
+        style: {
+          label: "",
+          width: isCircleFocus ? 28 : 34,
+          height: isCircleFocus ? 28 : 20,
+          padding: "0px",
+          "min-width": isCircleFocus ? 28 : 34,
+          "min-height": isCircleFocus ? 28 : 20,
+          opacity: 0.82
+        }
+      }
+    ],
+    layout: getFocusCytoscapeLayout(mindmap.positions)
+  });
+
+  focusCytoscape.on("tap", "node", (event) => {
+    const nodeId = event.target.id();
+    const now = Date.now();
+    const isDoubleTap = lastCytoscapeTap.nodeId === nodeId && now - lastCytoscapeTap.time <= 360;
+    lastCytoscapeTap = { nodeId, time: now };
+    if (isDoubleTap) {
+      toggleGraphNodeCollapse(nodeId, nodes);
+      return;
+    }
+    selectNode(nodeId);
+  });
+
+  focusCytoscape.on("grab", "node", (event) => {
+    const sourceId = event.target.id();
+    clearCytoscapeDropState(focusCytoscape);
+    event.target.addClass("dragging");
+    state.dragState.active = true;
+    state.dragState.sourceNodeId = sourceId;
+  });
+
+  focusCytoscape.on("drag", "node", (event) => {
+    const sourceId = event.target.id();
+    focusCytoscape.nodes().removeClass("drop-target invalid-drop");
+    const target = getCytoscapeDropTarget(focusCytoscape, sourceId);
+    if (!target) {
+      return;
+    }
+    target.addClass(canMoveNodeUnderTarget(sourceId, target.id(), getTreeSourceNodes()) ? "drop-target" : "invalid-drop");
+  });
+
+  focusCytoscape.on("free", "node", (event) => {
+    const sourceId = event.target.id();
+    const target = getCytoscapeDropTarget(focusCytoscape, sourceId);
+    clearCytoscapeDropState(focusCytoscape);
+    state.dragState.active = false;
+    state.dragState.sourceNodeId = null;
+    if (target && canMoveNodeUnderTarget(sourceId, target.id(), getTreeSourceNodes())) {
+      commitTreeMove(sourceId, target.id());
+    } else {
+      focusCytoscape.layout(getFocusCytoscapeLayout(mindmap.positions)).run();
+    }
+  });
+
+  requestAnimationFrame(() => {
+    focusCytoscape.fit(undefined, 96);
+    focusCytoscape.center();
+    if (state.graphTreeScale !== 1) {
+      const center = {
+        x: container.clientWidth / 2,
+        y: container.clientHeight / 2
+      };
+      focusCytoscape.zoom({
+        level: clamp(focusCytoscape.zoom() * state.graphTreeScale, focusCytoscape.minZoom(), focusCytoscape.maxZoom()),
+        renderedPosition: center
+      });
+    }
+  });
+}
+
 function renderTreeGraph(nodes = state.nodes) {
   const options = getGraphRenderOptions();
   expandCollapsedAncestorsForNode(state.selectedNodeId, state.nodes);
@@ -1872,7 +2317,7 @@ function renderTreeGraph(nodes = state.nodes) {
   const svgNS = "http://www.w3.org/2000/svg";
   const treeTooltip = getOrCreateTreeTooltip();
   const svg = document.createElementNS(svgNS, "svg");
-  svg.setAttribute("class", "tree-graph-svg");
+  svg.setAttribute("class", `tree-graph-svg${state.treeFocusMode ? " professional-graph-svg" : ""}`);
   svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
   const viewportWidth = el.treeRoot?.clientWidth || 0;
   const viewportHeight = el.treeRoot?.clientHeight || 0;
@@ -1891,22 +2336,37 @@ function renderTreeGraph(nodes = state.nodes) {
   svg.style.width = `${Math.max(160, Math.round(graph.width * renderedScale))}px`;
   svg.style.height = `${Math.max(120, Math.round(graph.height * renderedScale))}px`;
 
+  if (state.treeFocusMode) {
+    renderProfessionalGraphBackdrop(svg, graph, svgNS);
+  }
+
   graph.links.forEach((link) => {
-    const line = document.createElementNS(svgNS, "line");
-    line.setAttribute("x1", String(link.x1));
-    line.setAttribute("y1", String(link.y1));
-    line.setAttribute("x2", String(link.x2));
-    line.setAttribute("y2", String(link.y2));
-    line.setAttribute("class", "tree-link");
-    line.dataset.sourceId = String(link.sourceId);
-    line.dataset.targetId = String(link.targetId);
-    svg.appendChild(line);
+    const linkElement = state.treeFocusMode
+      ? createProfessionalTreeLink(link, svgNS)
+      : document.createElementNS(svgNS, "line");
+    if (!state.treeFocusMode) {
+      linkElement.setAttribute("x1", String(link.x1));
+      linkElement.setAttribute("y1", String(link.y1));
+      linkElement.setAttribute("x2", String(link.x2));
+      linkElement.setAttribute("y2", String(link.y2));
+      linkElement.setAttribute("stroke", getComputedStyle(document.body).getPropertyValue("--node-stroke").trim() || "#7aa7bf");
+      linkElement.setAttribute("stroke-width", "2.4");
+      linkElement.setAttribute("opacity", "0.95");
+    } else {
+      linkElement.setAttribute("stroke", getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#37c6a5");
+      linkElement.setAttribute("stroke-width", "3.2");
+      linkElement.setAttribute("opacity", "0.96");
+    }
+    linkElement.dataset.sourceId = String(link.sourceId);
+    linkElement.dataset.targetId = String(link.targetId);
+    svg.appendChild(linkElement);
   });
 
   graph.nodes.forEach((node) => {
     const nodeGroup = document.createElementNS(svgNS, "g");
     nodeGroup.setAttribute("class", buildGraphNodeGroupClass(node.id));
     nodeGroup.dataset.nodeId = String(node.id);
+    nodeGroup.dataset.depth = String(node.depth || 0);
 
     const shape = node.visualShape === "box" || node.visualShape === "mini-box"
       ? document.createElementNS(svgNS, "rect")
@@ -2038,10 +2498,86 @@ function renderTreeGraph(nodes = state.nodes) {
   });
 
   const canvas = document.createElement("div");
-  canvas.className = `tree-graph-canvas ${isViewportFitted ? "fit-view" : "zoom-view"}`;
+  canvas.className = `tree-graph-canvas ${state.treeFocusMode ? "professional-graph-canvas" : ""} ${isViewportFitted ? "fit-view" : "zoom-view"}`.trim();
   canvas.appendChild(svg);
   el.treeRoot.appendChild(canvas);
   focusSelectedGraphNodeWhenZoomed(graph);
+}
+
+function renderProfessionalGraphBackdrop(svg, graph, svgNS) {
+  const defs = document.createElementNS(svgNS, "defs");
+  const gradient = document.createElementNS(svgNS, "linearGradient");
+  gradient.setAttribute("id", "professionalGraphLinkGradient");
+  gradient.setAttribute("x1", "0%");
+  gradient.setAttribute("x2", "100%");
+  gradient.setAttribute("y1", "0%");
+  gradient.setAttribute("y2", "0%");
+
+  const start = document.createElementNS(svgNS, "stop");
+  start.setAttribute("offset", "0%");
+  start.setAttribute("stop-color", "currentColor");
+  start.setAttribute("stop-opacity", "0.35");
+
+  const end = document.createElementNS(svgNS, "stop");
+  end.setAttribute("offset", "100%");
+  end.setAttribute("stop-color", "currentColor");
+  end.setAttribute("stop-opacity", "0.82");
+
+  gradient.appendChild(start);
+  gradient.appendChild(end);
+  defs.appendChild(gradient);
+  svg.appendChild(defs);
+
+  const maxDepth = Math.max(...graph.nodes.map((node) => Number(node.depth) || 0), 0);
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const nodesAtDepth = graph.nodes.filter((node) => Number(node.depth) === depth);
+    if (!nodesAtDepth.length) {
+      continue;
+    }
+    const minY = Math.min(...nodesAtDepth.map((node) => node.y - node.height / 2));
+    const maxY = Math.max(...nodesAtDepth.map((node) => node.y + node.height / 2));
+    const band = document.createElementNS(svgNS, "rect");
+    band.setAttribute("x", "12");
+    band.setAttribute("y", String(Math.max(6, minY - 18)));
+    band.setAttribute("width", String(Math.max(0, graph.width - 24)));
+    band.setAttribute("height", String(Math.max(36, maxY - minY + 36)));
+    band.setAttribute("rx", "18");
+    band.setAttribute("class", depth % 2 === 0 ? "professional-depth-band" : "professional-depth-band alt");
+    svg.appendChild(band);
+  }
+}
+
+function createProfessionalTreeLink(link, svgNS) {
+  const path = document.createElementNS(svgNS, "path");
+  const midY = link.y1 + (link.y2 - link.y1) * 0.52;
+  path.setAttribute("d", `M ${link.x1} ${link.y1} C ${link.x1} ${midY}, ${link.x2} ${midY}, ${link.x2} ${link.y2}`);
+  path.setAttribute("class", "tree-link professional-tree-link");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  return path;
+}
+
+function appendProfessionalNodeDetails(nodeGroup, node, svgNS) {
+  const badge = document.createElementNS(svgNS, "g");
+  badge.setAttribute("class", "professional-depth-badge");
+  badge.setAttribute("transform", `translate(${node.x - node.width / 2 + 12}, ${node.y - node.height / 2 + 10})`);
+
+  const badgeBg = document.createElementNS(svgNS, "rect");
+  badgeBg.setAttribute("width", "46");
+  badgeBg.setAttribute("height", "17");
+  badgeBg.setAttribute("rx", "8.5");
+  badgeBg.setAttribute("class", "professional-depth-badge-bg");
+
+  const badgeLabel = document.createElementNS(svgNS, "text");
+  badgeLabel.setAttribute("x", "23");
+  badgeLabel.setAttribute("y", "12");
+  badgeLabel.setAttribute("class", "professional-depth-badge-label");
+  badgeLabel.textContent = `D${Number(node.depth) || 0}`;
+
+  badge.appendChild(badgeBg);
+  badge.appendChild(badgeLabel);
+  nodeGroup.appendChild(badge);
 }
 
 function getOrCreateTreeTooltip() {
@@ -2401,6 +2937,16 @@ function getVisibleGraphNodes(nodes = state.nodes) {
 }
 
 function getZoomScopedGraphNodes(nodes = state.nodes) {
+  if (state.graphScopeMode === "path" && state.selectedNodeId) {
+    const pathIds = new Set(getPathToNode(state.selectedNodeId).map((node) => String(node.id)));
+    return nodes
+      .filter((node) => pathIds.has(String(node.id)))
+      .map((node) => ({
+        ...node,
+        parentId: node.parentId != null && pathIds.has(String(node.parentId)) ? node.parentId : null
+      }));
+  }
+
   if (state.graphZoom <= 1 || !state.selectedNodeId) {
     return nodes;
   }
@@ -4832,6 +5378,7 @@ function changeGraphZoom(direction) {
   if (state.treeViewMode !== "graph") {
     return;
   }
+  state.graphScopeMode = "range";
   const current = getClosestGraphZoomPreset(state.graphZoom);
   const currentIndex = GRAPH_ZOOM_PRESETS.indexOf(current);
   const nextIndex = clamp(currentIndex + Math.sign(direction), 0, GRAPH_ZOOM_PRESETS.length - 1);
@@ -4843,12 +5390,18 @@ function setGraphZoom(value) {
   if (state.treeViewMode !== "graph") {
     return;
   }
-  state.graphZoom = getClosestGraphZoomPreset(value);
+  if (value === "path") {
+    state.graphScopeMode = "path";
+  } else {
+    state.graphScopeMode = "range";
+    state.graphZoom = getClosestGraphZoomPreset(value);
+  }
   renderTree();
 }
 
 function resetGraphZoom() {
   state.graphZoom = 1;
+  state.graphScopeMode = "range";
   state.graphTreeScale = 1;
   renderTree();
 }
@@ -4872,12 +5425,36 @@ function setGraphNodeShape(shape) {
   renderTree();
 }
 
+function setFocusGraphLayout(layout) {
+  if (state.treeViewMode !== "graph" || !state.treeFocusMode) {
+    return;
+  }
+  if (layout !== "mindmap" && layout !== "tree") {
+    return;
+  }
+  state.focusGraphLayout = layout;
+  renderTree();
+}
+
 function toggleGraphResizeMode() {
   if (state.treeViewMode !== "graph") {
     return;
   }
   state.graphResizeMode = !state.graphResizeMode;
   renderTree();
+}
+
+function toggleTreeFocusMode() {
+  setTreeFocusMode(!state.treeFocusMode);
+}
+
+function setTreeFocusMode(enabled) {
+  state.treeFocusMode = Boolean(enabled);
+  if (state.treeFocusMode && state.treeViewMode !== "graph") {
+    state.treeViewMode = "graph";
+  }
+  document.body.classList.toggle("tree-focus-active", state.currentView === "app" && state.treeFocusMode);
+  render();
 }
 
 function isAutoGeneratedRoomTitle(title) {
@@ -4949,11 +5526,11 @@ function getGraphRenderOptions() {
     compactDotRadius: Math.round(8 + dotProgress * 3),
     radius: Math.round((semanticCompact ? 24 : 30) * scale),
     circleLabelLength: Math.max(7, Math.floor(9 * scale)),
-    minBoxWidth: Math.round(158 * scale),
-    maxCharsPerLine: Math.max(12, Math.floor(20 * scale)),
-    horizontalPadding: Math.round((isBox ? 30 : 18) * scale),
-    verticalPadding: Math.round((isBox ? 18 : 12) * scale),
-    lineHeight: Math.round((isBox ? 22 : 17) * scale),
+    minBoxWidth: Math.round((state.treeFocusMode ? 188 : 158) * scale),
+    maxCharsPerLine: Math.max(12, Math.floor((state.treeFocusMode ? 24 : 20) * scale)),
+    horizontalPadding: Math.round((isBox ? (state.treeFocusMode ? 34 : 30) : 18) * scale),
+    verticalPadding: Math.round((isBox ? 10 : 12) * scale),
+    lineHeight: Math.round((isBox ? 17 : 17) * scale),
     fontSize: Math.round((isBox ? 16 : 13) * scale),
     cornerRadius: Math.round(12 * scale)
   };
@@ -5130,9 +5707,9 @@ function getGraphLabelStartY(node, options) {
 function getTreeGraphLayout(nodes, options = getGraphRenderOptions(), hiddenCountMap = new Map()) {
   const tree = buildTree(nodes);
   const roots = tree.filter((node) => node.parentId === null);
-  const xGap = Math.round((options.semanticCompact ? 46 : (options.shape === "box" ? 18 : 44)) * options.scale);
-  const yGap = Math.round((options.semanticCompact ? 78 : (options.shape === "box" ? 76 : 98)) * options.scale);
-  const margin = Math.round((options.shape === "box" ? 24 : 34) * options.scale);
+  const xGap = Math.round((state.treeFocusMode ? 38 : (options.semanticCompact ? 46 : (options.shape === "box" ? 18 : 44))) * options.scale);
+  const yGap = Math.round((state.treeFocusMode ? 112 : (options.semanticCompact ? 78 : (options.shape === "box" ? 91 : 98))) * options.scale);
+  const margin = Math.round((state.treeFocusMode ? 54 : (options.shape === "box" ? 24 : 34)) * options.scale);
   const placed = [];
 
   function measureSubtree(node, depth) {

@@ -557,6 +557,151 @@ input:focus {
   animation: fadeIn 0.4s ease;
 }
 
+body.tree-focus-active main {
+  width: min(1920px, calc(100vw - 18px));
+}
+
+body.tree-focus-active .app-wrap {
+  padding-left: 0;
+}
+
+body.tree-focus-active .room-drawer-toggle,
+body.tree-focus-active .room-drawer,
+body.tree-focus-active .room-drawer-backdrop,
+body.tree-focus-active .resize-handle,
+body.tree-focus-active .chat-panel,
+body.tree-focus-active .insight-panel {
+  display: none !important;
+}
+
+body.tree-focus-active .app {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(100vh - 112px);
+  gap: 0;
+}
+
+body.tree-focus-active .tree-panel {
+  min-height: calc(100vh - 112px);
+  padding: 1.15rem;
+  border-radius: 24px;
+  background:
+    radial-gradient(900px 420px at 50% 20%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+    var(--glass-bg);
+}
+
+body.tree-focus-active .panel-head {
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+body.tree-focus-active .tree-root.graph-mode {
+  perspective: 1200px;
+  border-radius: 20px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--line) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, var(--line) 18%, transparent) 1px, transparent 1px),
+    radial-gradient(900px 520px at 50% 42%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 72%),
+    color-mix(in srgb, var(--surface) 30%, transparent);
+  background-size: 44px 44px, 44px 44px, auto, auto;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+}
+
+.cyto-tree-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 680px;
+  border-radius: 20px;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--line) 20%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, var(--line) 16%, transparent) 1px, transparent 1px),
+    radial-gradient(900px 520px at 50% 42%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 72%),
+    color-mix(in srgb, var(--surface) 30%, transparent);
+  background-size: 44px 44px, 44px 44px, auto, auto;
+}
+
+.focus-layout-toggle {
+  display: none !important;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+body.tree-focus-active .tree-graph-canvas {
+  transform-style: preserve-3d;
+}
+
+body.tree-focus-active .tree-graph-svg {
+  filter: drop-shadow(0 24px 28px rgba(0, 0, 0, 0.18));
+  color: var(--accent);
+}
+
+body.tree-focus-active .tree-link {
+  stroke: color-mix(in srgb, var(--accent) 58%, var(--text));
+  stroke-width: 3;
+  opacity: 0.92;
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.18));
+}
+
+body.tree-focus-active .tree-node-circle,
+body.tree-focus-active .tree-node-box {
+  stroke-width: 1.4;
+  filter: drop-shadow(0 15px 13px rgba(0, 0, 0, 0.2));
+}
+
+body.tree-focus-active .tree-node-circle.active,
+body.tree-focus-active .tree-node-box.active {
+  stroke-width: 2.4;
+  filter: drop-shadow(0 16px 16px color-mix(in srgb, var(--accent) 28%, transparent));
+}
+
+body.tree-focus-active .tree-node-box {
+  fill: color-mix(in srgb, var(--surface) 82%, white 8%);
+  stroke: color-mix(in srgb, var(--accent) 48%, var(--node-stroke));
+}
+
+body.tree-focus-active .tree-node-box.active {
+  fill: color-mix(in srgb, var(--accent) 22%, var(--surface));
+}
+
+body.tree-focus-active .tree-node-label {
+  font-weight: 850;
+}
+
+.professional-depth-band {
+  fill: color-mix(in srgb, var(--surface) 22%, transparent);
+  pointer-events: none;
+}
+
+.professional-depth-band.alt {
+  fill: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.professional-tree-link {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 68%, var(--text));
+  stroke-linecap: round;
+}
+
+.professional-depth-badge {
+  pointer-events: none;
+}
+
+.professional-depth-badge-bg {
+  fill: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent) 36%, transparent);
+  stroke-width: 0.8;
+}
+
+.professional-depth-badge-label {
+  fill: var(--muted);
+  font-size: 8px;
+  font-weight: 900;
+  text-anchor: middle;
+}
+
 .room-drawer-toggle {
   position: absolute;
   left: 0;
@@ -952,6 +1097,40 @@ input:focus {
   font-weight: 800;
 }
 
+.tree-focus-mode-btn.active {
+  color: var(--control-active-text);
+  background: var(--control-active-bg);
+  font-weight: 800;
+}
+
+.tree-focus-close-btn {
+  display: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+body.tree-focus-active .tree-focus-mode-btn {
+  display: none;
+}
+
+body.tree-focus-active .tree-focus-close-btn {
+  display: inline-grid;
+  place-items: center;
+}
+
+body.tree-focus-active .tree-focus-close-btn:hover {
+  background: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  border-color: color-mix(in srgb, var(--danger) 44%, var(--line));
+}
+
 .graph-tree-scale-controls {
   display: inline-flex;
   align-items: center;
@@ -1191,8 +1370,11 @@ input:focus {
 }
 
 .tree-link {
-  stroke: rgba(171, 209, 230, 0.58);
-  stroke-width: 1.6;
+  fill: none;
+  stroke: color-mix(in srgb, var(--node-stroke) 76%, var(--text));
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  opacity: 0.9;
 }
 
 .tree-node-circle,
