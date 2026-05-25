@@ -2589,3 +2589,189 @@ body.tree-dragging * {
 *:hover::-webkit-scrollbar-thumb {
     background-color: rgba(67, 218, 184, 0.25) !important;
 }
+/* 1. 패널들을 감싸는 부모 컨테이너의 모든 기본 여백을 제로로 만듭니다 */
+.app {
+  gap: 0 !important; /* 패널 사이의 간격을 완전히 없애서 flush하게 밀착시킵니다 */
+  padding: 0 !important;
+}
+
+/* 2. 각 패널의 불필요한 바깥 마진이 있다면 제거합니다 */
+.panel {
+  margin: 0 !important;
+  border-radius: 0 !important; /* 패널들이 실선에 딱 맞물리도록 모서리 각을 살립니다 (선택 사항) */
+}
+
+/* 3. 리사이즈 핸들을 투명하게 만들고 정중앙에 1px 실선만 남깁니다 */
+.resize-handle {
+  width: 6px !important;       /* 💡 중요: 마우스로 잡을 수 있는 최소한의 투명 히트박스 영역 */
+  background: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.1) !important; /* 💡 은은한 흰색 1px 실선 주입 */
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+/* 4. 마우스를 올렸을 때(Hover)만 시그니처 민트색으로 하이라이트 효과를 줍니다 */
+.resize-handle:hover {
+  border-left-color: #43dab8 !important; /* PathLearn AI의 메인 포인트 컬러 */
+  background-color: rgba(67, 218, 184, 0.05) !important; /* 은은한 불빛 효과 */
+}
+
+body {
+  letter-spacing: -0.02em !important; /* 💡 글자 자간을 살짝 조여주면 폰트가 훨씬 세련되게 변합니다 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+
+/* ==========================================================================
+   💎 PathLearn AI 프로덕트 레벨 UI 폴리싱 스펙 (라이트 테마 최적화)
+   ========================================================================== */
+
+/* 1. 학습 인사이트 - 불필요한 디버깅용 메타 데이터 숨김 및 제목 강화 */
+#selectedNodeMeta {
+  display: none !important;
+}
+
+#selectedNodeTitle {
+  font-size: 15px !important;
+  font-weight: 800 !important;
+  color: #1e293b !important; /* 선명한 다크 네이비 */
+  margin-bottom: 12px !important;
+}
+
+
+/* 2. 미니맵 하단 컨트롤러 조작계 (선명한 다크 그레이 텍스트 복구) */
+.tree-panel [style*="display: flex"] button, 
+#treeRoot + div button,
+.tree-panel .btn, 
+.tree-panel input[type="button"] {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  color: #475569 !important; /* 💡 투명해졌던 글씨를 선명한 회색으로 복구 */
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  border-radius: 6px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
+}
+
+.tree-panel [style*="display: flex"] button:hover {
+  background: rgba(67, 218, 184, 0.08) !important;
+  border-color: #43dab8 !important;
+  color: #0d9488 !important;
+}
+
+
+/* 3. 투박한 기본 셀렉트 박스 (디자인 테마 핏 조율 및 화살표 교체) */
+.tree-panel select, 
+.node-search-select,
+#graphZoomSelect {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  color: #475569 !important; /* 💡 묻혔던 선택창 글씨 복구 */
+  padding: 4px 24px 4px 10px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  border-radius: 6px !important;
+  outline: none !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
+  
+  /* 💡 라이트 테마 환경에 걸맞는 짙은 슬레이트색 화살표 SVG 주입 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23475569' stroke-width='2.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19.5 8.25l-7.5 7.5-7.5-7.5'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 6px center !important;
+  background-size: 10px !important;
+}
+
+.tree-panel select:hover {
+  border-color: #43dab8 !important;
+}
+
+/* ==========================================================================
+   🧠 제미나이 & 챗GPT 스타일 프리미엄 타이포그래피 (최종 완성본)
+   ========================================================================== */
+
+/* AI 말풍선 및 지식 추출 결과창 전체 본문 레이아웃 */
+.chat-feed .bubble.ai, 
+#extractResultContent, 
+.pdf-markdown-content {
+  font-size: 15.5px !important;    /* 💡 제미나이/GPT 표준: 14px은 너무 작고 빽빽합니다. 15.5px로 확 키워주세요. */
+  line-height: 1.8 !important;      /* 💡 줄간격을 1.8로 넓혀 글자가 뭉쳐 보이지 않게 숨통을 틉니다. */
+  color: #1e293b !important;        /* 💡 가독성이 가장 높은 부드럽고 묵직한 다크 슬레이트 톤 */
+  font-weight: 400 !important;
+}
+
+/* 1. 문단(Paragraph) 간 여백 확보 */
+.chat-feed .bubble.ai p, #extractResultContent p {
+  margin-top: 0 !important;
+  margin-bottom: 18px !important;   /* 💡 일반 본문 단락이 끝날 때마다 시원한 공백 부여 */
+}
+
+/* 2. 리스트 상자 구조 강제 복구 (Tailwind 등 초기화 라이브러리 완벽 무력화) */
+.chat-feed .bubble.ai ol, #extractResultContent ol {
+  list-style-type: decimal !important;
+  padding-left: 24px !important;
+  margin-top: 8px !important;
+  margin-bottom: 20px !important;
+}
+
+.chat-feed .bubble.ai ul, #extractResultContent ul {
+  list-style-type: disc !important;
+  padding-left: 24px !important;
+  margin-top: 8px !important;
+  margin-bottom: 20px !important;
+}
+
+/* 3. 🔥 [대참사 해결 핵심] 번호 기호 밖으로 글자 라인 정렬 + 항목 간 간격 벌리기 */
+.chat-feed .bubble.ai li, #extractResultContent li {
+  display: list-item !important;
+  list-style-position: outside !important; /* 💡 글자가 아무리 길어져도 번호 안쪽 공간으로 예쁘게 자동 정렬 */
+  margin-bottom: 16px !important;          /* 💡 항목(1번, 2번..) 사이의 간격을 벌려 가독성 극대화 (GPT 핵심 스펙) */
+  padding-left: 6px !important;
+  color: #334155 !important;
+}
+
+/* 4. 강조 텍스트(strong) 디자인 조율 (하이라이트 틴트 완전 제거) */
+.chat-feed .bubble.ai strong, #extractResultContent strong, .pdf-markdown-content strong {
+  color: #0f172a !important;        /* 💡 배경 색상을 빼는 대신, 확실하게 깊고 진한 프리미엄 볼드 블랙 처리 */
+  font-weight: 700 !important;
+  background: none !important;      /* 요청하신 하이라이트 틴트 배경 삭제 */
+  padding: 0 !important;
+}
+
+/* 5. 인라인 코드 스타일 (`코드`) */
+.chat-feed .bubble.ai code, #extractResultContent code {
+  font-family: 'Fira Code', 'Courier New', monospace !important;
+  background-color: #f1f5f9 !important;
+  color: #ea580c !important;        /* 세련된 오렌지 레드 포인트 컬러 */
+  padding: 2px 6px !important;
+  font-size: 13px !important;
+  border-radius: 4px !important;
+  font-weight: 600 !important;
+}
+
+/* 6. 대형 소스코드 블록 (pre) */
+.chat-feed .bubble.ai pre, #extractResultContent pre {
+  background-color: #0f172a !important; /* 제미나이/GPT처럼 코드창은 다크 스킨으로 반전 */
+  padding: 18px !important;
+  border-radius: 8px !important;
+  overflow-x: auto !important;
+  margin: 18px 0 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04) !important;
+}
+
+.chat-feed .bubble.ai pre code, #extractResultContent pre code {
+  font-family: 'Fira Code', 'Courier New', monospace !important;
+  background-color: transparent !important;
+  color: #cbd5e1 !important;
+  font-size: 13px !important;
+  padding: 0 !important;
+}

@@ -317,6 +317,7 @@ public class ChatService {
                 .depth(initialDepth)
                 .build();
     }
+
     @Transactional(readOnly = true)
     public ChildNodeRecommendationResponse getDirectChildRecommendations(
             String authorization,

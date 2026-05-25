@@ -212,6 +212,17 @@ const el = {
   themeOptionBtns: document.querySelectorAll("[data-theme-option]")
 };
 
+// 💡 정확히 여기에 쏙 들어오면 됩니다!
+if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
+  marked.setOptions({
+    highlight: function (code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+      return hljs.highlight(code, { language }).value;
+    },
+    langPrefix: 'hljs language-'
+  });
+}
+
 applyUiTheme(state.uiTheme);
 bindEvents();
 setupPanelResizers();
@@ -238,22 +249,44 @@ function bindEvents() {
   });
 
   el.openSettingsBtn?.addEventListener("click", openSettingsView);
-  // 🌟 기존 el.openRoomsBtn 이벤트를 아래 코드로 교체하세요
-  el.openRoomsBtn?.addEventListener("click", async () => {
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 🔥 [최종 완성] 홈 화면 버튼 & 대화방 내부 버튼 통합 위임 + 디버깅 로그 주입
+  // ──────────────────────────────────────────────────────────────────────────
+  document.addEventListener("click", async (event) => {
+    // 💡 홈 화면 버튼(#openRoomsBtn)과 대화방 내부 버튼(#roomDrawerToggle)을 모두 감시망에 넣습니다.
+    const openRoomsBtn = event.target.closest("#openRoomsBtn") || 
+                         event.target.closest(".open-rooms-btn") ||
+                         event.target.closest("#roomDrawerToggle") || 
+                         event.target.closest(".room-drawer-toggle");
+    
+    if (!openRoomsBtn) return; // 대화목록 관련 버튼이 아니면 무시
+    
+    event.preventDefault();
+    
+    // 📝 크롬 콘솔(F12)에 클릭이 되었는지, 어떤 버튼이 잡혔는지 로그를 찍어줍니다.
+    console.log("🎯 [PathLearn 디버깅] 대화목록 버튼 클릭 감지됨! 엘리먼트 구조:", openRoomsBtn);
+    
     if (!state.currentSession?.accessToken) {
+      console.warn("🔒 로그인 세션이 없어 로그인 화면으로 이동합니다.");
       switchView("auth", "login");
       return;
     }
     
     // 현재 랜딩 페이지 등 다른 화면에 있다면 앱 화면으로 전환 후 강제 열기
     if (state.currentView !== "app") {
+      console.log("🏠 홈 화면에서 대화방 뷰로 진입하며 드로어를 엽니다.");
       await openAppView();
       toggleRoomDrawer(true); 
     } else {
-      // 🌟 이미 앱 화면에 있다면 누를 때마다 열림/닫힘 토글!
+      // 이미 앱 화면에 있다면 누를 때마다 열림/닫힘 토글!
+      console.log("💬 대화방 내부에서 드로어 토글(열림/닫힘)을 실행합니다.");
       toggleRoomDrawer(); 
     }
   });
+  // ──────────────────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+
   el.heroStartBtn?.addEventListener("click", onHeroStartClick);
   el.heroDemoBtn?.addEventListener("click", onHeroDemoClick);
   el.logoutBtn?.addEventListener("click", logout);
@@ -884,23 +917,33 @@ function toggleRoomDrawer(force) {
 }
 
 function renderRoomDrawer() {
-  if (!el.roomDrawer) {
+  // 💡 [핵심 교정] 대화방 진입 시 재렌더링되는 진짜 최신 HTML 엘리먼트들을 실시간으로 새로 낚아챕니다.
+  const currentDrawer = document.getElementById("roomDrawer") || el.roomDrawer;
+  const currentBackdrop = document.getElementById("roomDrawerBackdrop") || el.roomDrawerBackdrop;
+  const currentAppView = document.getElementById("appView") || el.appView;
+  const currentDeleteModeBtn = document.getElementById("roomDeleteModeBtn") || el.roomDeleteModeBtn;
+  const currentDeleteApplyBtn = document.getElementById("roomDeleteApplyBtn") || el.roomDeleteApplyBtn;
+  const currentDeleteCancelBtn = document.getElementById("roomDeleteCancelBtn") || el.roomDeleteCancelBtn;
+  const currentRoomList = document.getElementById("roomList") || el.roomList;
+
+  if (!currentDrawer) {
     return;
   }
 
-  el.roomDrawer.classList.toggle("open", state.isRoomDrawerOpen);
-  el.roomDrawerBackdrop?.classList.toggle("open", state.isRoomDrawerOpen);
-  el.appView?.classList.toggle("drawer-open", state.isRoomDrawerOpen);
+  // 유령 노드가 아닌 화면에 살아있는 진짜 드로어에 클래스를 끄고 켭니다.
+  currentDrawer.classList.toggle("open", state.isRoomDrawerOpen);
+  currentBackdrop?.classList.toggle("open", state.isRoomDrawerOpen);
+  currentAppView?.classList.toggle("drawer-open", state.isRoomDrawerOpen);
 
-  el.roomDeleteModeBtn?.classList.toggle("hidden", state.roomDeleteMode);
-  el.roomDeleteApplyBtn?.classList.toggle("hidden", !state.roomDeleteMode);
-  el.roomDeleteCancelBtn?.classList.toggle("hidden", !state.roomDeleteMode);
+  currentDeleteModeBtn?.classList.toggle("hidden", state.roomDeleteMode);
+  currentDeleteApplyBtn?.classList.toggle("hidden", !state.roomDeleteMode);
+  currentDeleteCancelBtn?.classList.toggle("hidden", !state.roomDeleteMode);
 
-  if (!el.roomList) {
+  if (!currentRoomList) {
     return;
   }
 
-  el.roomList.innerHTML = "";
+  currentRoomList.innerHTML = "";
   getVisibleConversationRooms().forEach((room) => {
     const row = document.createElement("div");
     row.className = "room-item-row";
@@ -942,7 +985,7 @@ function renderRoomDrawer() {
     });
 
     row.appendChild(btn);
-    el.roomList.appendChild(row);
+    currentRoomList.appendChild(row); // 💡 실시간으로 잡은 리스트 영역에 방들을 렌더링합니다.
   });
 }
 
@@ -2056,9 +2099,21 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
       const depth = Number(node.depth) || 0;
       const hiddenCount = hiddenCountMap.get(String(node.id)) || 0;
       const compact = renderOptions.semanticCompact && (renderOptions.labeledDepth < 0 || depth > renderOptions.labeledDepth);
+      
+      // 💡 [여기 추가] 원형 모드일 때 띄어쓰기가 없어도 글자 중심을 잘라 두 줄(\n)로 강제 분할합니다.
+      let nodeTitle = getGraphDisplayTitle(node);
+      if (isCircleFocus && !compact && nodeTitle.length > 5) {
+        if (nodeTitle.includes(" ")) {
+          nodeTitle = nodeTitle.replace(" ", "\n");
+        } else {
+          const mid = Math.ceil(nodeTitle.length / 2);
+          nodeTitle = nodeTitle.slice(0, mid) + "\n" + nodeTitle.slice(mid);
+        }
+      }
+
       const label = compact
         ? ""
-        : `${getGraphDisplayTitle(node)}${hiddenCount ? `\n+${hiddenCount} 숨김` : ""}`;
+        : `${nodeTitle}${hiddenCount ? `\n+${hiddenCount} 숨김` : ""}`;
       return {
         group: "nodes",
         data: {
@@ -2101,146 +2156,144 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
     minZoom: 0.18,
     maxZoom: 2.6,
     style: [
-      {
-        selector: "node",
-        style: {
-          shape: isCircleFocus ? "ellipse" : "round-rectangle",
-          label: "data(label)",
-          "background-color": "data(fill)",
-          "border-color": "data(stroke)",
-          "border-width": isCircleFocus ? 2.4 : 2,
-          color: text,
-          "font-size": isCircleFocus ? 13 : 15,
-          "font-weight": 800,
-          "text-wrap": "wrap",
-          "text-max-width": isCircleFocus ? 78 : 185,
-          "text-valign": "center",
-          "text-halign": "center",
-          width: isCircleFocus ? 82 : "label",
-          height: isCircleFocus ? 82 : "label",
-          padding: isCircleFocus ? "8px" : "15px",
-          "min-width": isCircleFocus ? 82 : 132,
-          "min-height": isCircleFocus ? 82 : 38,
-          "shadow-blur": 10,
-          "shadow-color": "data(stroke)",
-          "shadow-opacity": 0.12,
-          "shadow-offset-y": 4,
-          "overlay-opacity": 0,
-          "transition-property": "background-color, border-color, width, height, opacity",
-          "transition-duration": "140ms"
-        }
-      },
-      {
-        selector: "node:selected, node.selected",
-        style: {
-          "background-color": selectedFill,
-          "border-color": accent,
-          "border-width": 4,
-          "shadow-blur": isCircleFocus ? 24 : 18,
-          "shadow-color": accent,
-          "shadow-opacity": 0.35,
-          "shadow-offset-y": 8
-        }
-      },
-      {
-        selector: "node.important",
-        style: {
-          "border-color": "#f0b94f",
-          "border-style": "double",
-          "border-width": 4
-        }
-      },
-      {
-        selector: "node.compact",
-        style: {
-          label: "",
-          width: isCircleFocus ? 28 : 34,
-          height: isCircleFocus ? 28 : 20,
-          padding: "0px",
-          "min-width": isCircleFocus ? 28 : 34,
-          "min-height": isCircleFocus ? 28 : 20,
-          "border-width": isCircleFocus ? 2 : 1.6,
-          opacity: 0.82
-        }
-      },
-      {
-        selector: "node.dragging",
-        style: {
-          opacity: 0.78,
-          "border-style": "dashed",
-          "z-index": 90
-        }
-      },
-      {
-        selector: "node.drop-target",
-        style: {
-          "background-color": selectedFill,
-          "border-color": accent,
-          "border-width": 5,
-          "shadow-blur": 22,
-          "shadow-color": accent,
-          "shadow-opacity": 0.42
-        }
-      },
-      {
-        selector: "node.invalid-drop",
-        style: {
-          "border-color": "#d46b62",
-          "border-width": 4
-        }
-      },
-      {
-        selector: "node.collapsed",
-        style: {
-          "background-blacken": -0.05,
-          "text-outline-color": surface,
-          "text-outline-width": 1
-        }
-      },
-      {
-        selector: "edge",
-        style: {
-          width: 3.2,
-          "line-color": "data(color)",
-          "target-arrow-color": "data(color)",
-          "target-arrow-shape": "none",
-          "curve-style": "bezier",
-          opacity: 0.78,
-          "z-index": 1
-        }
-      },
-      {
-        selector: "edge.dragging-edge",
-        style: {
-          opacity: 0.08
-        }
-      },
-      {
-        selector: "node[depth = 0], node.root",
-        style: {
-          "font-size": isCircleFocus ? 15 : 16,
-          "background-color": "#7c58e8",
-          "border-color": "#6542cd",
-          color: "#ffffff",
-          "border-width": 3,
-          ...(isCircleFocus ? { width: 108, height: 108 } : { "min-width": 182, "min-height": 50 })
-        }
-      },
-      {
-        selector: "node.compact",
-        style: {
-          label: "",
-          width: isCircleFocus ? 28 : 34,
-          height: isCircleFocus ? 28 : 20,
-          padding: "0px",
-          "min-width": isCircleFocus ? 28 : 34,
-          "min-height": isCircleFocus ? 28 : 20,
-          opacity: 0.82
-        }
-      }
-    ],
-    layout: getFocusCytoscapeLayout(mindmap.positions)
-  });
+  {
+    selector: "node",
+style: {
+  shape: isCircleFocus ? "ellipse" : "round-rectangle",
+  label: "data(label)",
+  "background-color": "data(fill)",
+  "border-color": "data(stroke)",
+  "border-width": isCircleFocus ? 2.4 : 2,
+  color: text,
+  "font-size": isCircleFocus ? 11 : 15, // 원형일 때 글씨를 11로 콤팩트하게 조절
+  "font-weight": 800,
+  
+  // 💡 [핵심 교정] 여기를 주목해줘!
+  "text-wrap": "wrap",
+  "text-max-width": isCircleFocus ? 52 : 185, //폭을 52px로 확 조여서 글자가 알아서 아랫줄로 넘어가게 만듦
+  
+  "text-valign": "center",
+  "text-halign": "center",
+  
+  // 💡 원형 크기를 88로 살짝 키워서 두 줄이 들어갈 공간(상하 여백)을 확보해줌
+  width: isCircleFocus ? 88 : "label",
+  height: isCircleFocus ? 88 : "label",
+  padding: isCircleFocus ? "4px" : "15px",
+  "min-width": isCircleFocus ? 88 : 132,
+  "min-height": isCircleFocus ? 88 : 38,
+  
+  "shadow-blur": 10,
+  "shadow-color": "data(stroke)",
+  "shadow-opacity": 0.12,
+  "shadow-offset-y": 4,
+  "overlay-opacity": 0,
+  "transition-property": "background-color, border-color, width, height, opacity",
+  "transition-duration": "140ms"
+}
+  },
+  {
+    selector: "node:selected, node.selected",
+    style: {
+      "background-color": selectedFill,
+      "border-color": accent,
+      "border-width": 4,
+      "shadow-blur": isCircleFocus ? 24 : 18,
+      "shadow-color": accent,
+      "shadow-opacity": 0.35,
+      "shadow-offset-y": 8
+    }
+  },
+  {
+    selector: "node.important",
+    style: {
+      "border-color": "#f0b94f",
+      "border-style": "double",
+      "border-width": 4
+    }
+  },
+  {
+    selector: "node.compact",
+    style: {
+      label: "",
+      width: isCircleFocus ? 28 : 34,
+      height: isCircleFocus ? 28 : 20,
+      padding: "0px",
+      "min-width": isCircleFocus ? 28 : 34,
+      "min-height": isCircleFocus ? 28 : 20,
+      "border-width": isCircleFocus ? 2 : 1.6,
+      opacity: 0.82
+    }
+  },
+  {
+    selector: "node.dragging",
+    style: {
+      opacity: 0.78,
+      "border-style": "dashed",
+      "z-index": 90
+    }
+  },
+  {
+    selector: "node.drop-target",
+    style: {
+      "background-color": selectedFill,
+      "border-color": accent,
+      "border-width": 5,
+      "shadow-blur": 22,
+      "shadow-color": accent,
+      "shadow-opacity": 0.42
+    }
+  },
+  {
+    selector: "node.important",
+    style: {
+      "border-color": "#f0b94f",
+      "border-style": "double",
+      "border-width": 4
+    }
+  },
+  {
+    selector: "node.collapsed",
+    style: {
+      "background-blacken": -0.05,
+      "text-outline-color": surface,
+      "text-outline-width": 1
+    }
+  },
+  {
+    selector: "edge",
+    style: {
+      width: 3.2,
+      "line-color": "data(color)",
+      "target-arrow-color": "data(color)",
+      "target-arrow-shape": "none",
+      "curve-style": "bezier",
+      opacity: 0.78,
+      "z-index": 1
+    }
+  },
+  {
+    selector: "edge.dragging-edge",
+    style: {
+      opacity: 0.08
+    }
+  },
+  /* 루트(Root) 노드 스타일 정교화 */
+  {
+    selector: "node[depth = 0], node.root",
+    style: {
+      "font-size": isCircleFocus ? 14 : 16,
+      "background-color": "#7c58e8",
+      "border-color": "#6542cd",
+      color: "#ffffff",
+      "border-width": 3,
+      // 💡 [교정 4] 루트 노드가 원형일 때 글자가 튀어나가지 않도록 내측 마진(text-max-width) 강제 주입
+      "text-max-width": isCircleFocus ? 80 : 185,
+      ...(isCircleFocus ? { width: 108, height: 108 } : { "min-width": 182, "min-height": 50 })
+    }
+  }
+],
+layout: getFocusCytoscapeLayout(mindmap.positions)
+});
 
   focusCytoscape.on("tap", "node", (event) => {
     const nodeId = event.target.id();
@@ -2810,7 +2863,8 @@ function renderTreeNode(node) {
 
   const time = new Date(node.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const importantMark = isImportantNode(node.id) ? `<span class="node-important-mark">★</span>` : "";
-  button.innerHTML = `<span class="node-title">${importantMark}${escapeHtml(node.title)}</span><span class="node-meta">Depth ${node.depth} / ${time}</span>`;
+  // 뒤쪽의 <span class="node-meta"> 영역을 지우고 깔끔하게 제목(title)만 렌더링합니다.
+button.innerHTML = `<span class="node-title">${importantMark}${escapeHtml(node.title)}</span>`;
   button.addEventListener("click", () => {
     if (state.suppressNodeClick) {
       state.suppressNodeClick = false;
@@ -3837,7 +3891,7 @@ async function onChildRecommendationClick(nodeId, optionId) {
     option.createdNodeId = createdNodeId ? String(createdNodeId) : null;
   } catch (error) {
     alert(`하위 노드 생성 실패: ${toUiError(error)}`);
-  } finally {
+  } finally { // 💡 [긴급 교정] 기존에 final { 로 되어있던 부분을 finally { 로 수정해주세요!
     option.isCreating = false;
     const selectedNode = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
     if (selectedNode && String(selectedNode.id) === String(nodeId)) {
@@ -5398,7 +5452,8 @@ function makeBubble(role, text, timestamp, nodeId = null, isSelected = false) {
     displayContent = escapeHtml(text); // 유저 질문은 보안을 위해 일반 텍스트 처리
   }
 
-  bubble.innerHTML = `${displayContent}<span class="time">${role === "user" ? "You" : "AI"} / ${time}</span>`;
+  // 뒤에 붙어있던 <span class="time"> 태그 영역을 완전히 날려버립니다.
+bubble.innerHTML = `${displayContent}`;
   return bubble;
 }
 
@@ -5968,6 +6023,152 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// PDF 추출 버튼 이벤트 리스너
+document.addEventListener("DOMContentLoaded", () => {
+  const pdfBtn = document.getElementById("pdf-btn");
+
+  if (pdfBtn) {
+    pdfBtn.addEventListener("click", async () => {
+      // 1. 버튼 상태를 로딩 중으로 변경
+      const originalText = pdfBtn.textContent;
+      pdfBtn.textContent = "⏳ PDF 생성 중...";
+      pdfBtn.disabled = true;
+
+      try {
+        // 2. 화면에 보이는 모달창에서 데이터 가져오기
+        // 🚨 핵심 수정: innerText가 아니라 innerHTML을 사용하여 트리 구조 태그를 그대로 가져옴!
+        const modalContent = document.getElementById("extractResultContent").innerHTML;
+        const modalPath = document.getElementById("extractResultPathPreview").innerHTML;
+
+        // 💡 [추가] 오늘 날짜 자동 입력
+        const today = new Date();
+        document.getElementById("pdf-date").innerText = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+
+        // 3. 흰색 도화지에 데이터 옮겨 적기 (가독성을 위한 최적의 여백 리팩토링)
+        const pdfBox = document.getElementById("pdf-content-box");
+        
+        // 상위 엘리먼트의 악성 pre-wrap 속성을 완벽히 해제
+        pdfBox.style.whiteSpace = "normal"; 
+
+        pdfBox.innerHTML = `
+          <style>
+            /* 빈 태그 제거 */
+            .pdf-markdown-content p:empty, 
+            .pdf-markdown-content br { 
+              display: none !important; 
+            }
+
+            /* 본문 텍스트 단락 간 가독성을 위한 최적의 하단 마진 설정 */
+            .pdf-markdown-content p {
+              margin-top: 0px !important;
+              margin-bottom: 12px !important;
+              line-height: 1.6;
+              color: #334155 !important;
+            }
+
+            /* 본문 내부의 소제목(1. 데이터베이스 개요 등) 위아래 적정 여백 */
+            .pdf-markdown-content h1, 
+            .pdf-markdown-content h2, 
+            .pdf-markdown-content h3 {
+              margin-top: 20px !important;   /* 이전 문단과 확실히 구분되도록 위쪽 여백 부여 */
+              margin-bottom: 6px !important;  /* 제목 바로 밑 본문 내용과 자연스럽게 밀착 */
+              font-size: 16px !important;
+              font-weight: 700 !important;
+              color: #0f172a !important;
+            }
+
+            /* 리스트 문단(점 표기 방식 등) 간격 최적화 */
+            .pdf-markdown-content ul, 
+            .pdf-markdown-content ol {
+              margin-top: 0px !important;
+              margin-bottom: 12px !important;
+              padding-left: 20px !important;
+            }
+            .pdf-markdown-content li {
+              margin-bottom: 4px !important;
+              line-height: 1.5;
+              color: #334155 !important;
+            }
+
+            /* 리포트 전체의 맨 첫 번째 요소는 대제목 바로 밑에 붙도록 상단 마진 완전 제거 */
+            .pdf-markdown-content > *:first-child {
+              margin-top: 0px !important;
+            }
+          </style>
+
+          <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 0 0 10px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
+            <span style="color: #43dab8;">📝</span> AI 학습 요약 리포트
+          </h3>
+          
+          <div class="pdf-markdown-content" style="color: #334155; text-align: justify; word-break: keep-all; margin-bottom: 30px;">
+            ${modalContent}
+          </div>
+          
+          <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 32px 0 10px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
+            <span style="color: #43dab8;">📍</span> 선택된 지식 경로
+          </h3>
+          
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; display: flex; justify-content: center; align-items: center; padding: 35px 20px; margin-bottom: 10px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); overflow: hidden;">
+            <div style="transform: scale(1.05); transform-origin: center; white-space: normal !important;">
+              ${modalPath}
+            </div>
+          </div>
+        `;
+
+        // 4. 흰색 도화지를 html2canvas로 사진 찍기 (스케일 2로 고화질)
+        const reportElement = document.getElementById("report-area");
+        
+        // 렌더링을 위해 잠깐 화면 안으로 가져왔다가 바로 숨김 처리
+        reportElement.style.left = "0px";
+        reportElement.style.zIndex = "-1"; // 뒤로 숨김
+        
+        const canvas = await window.html2canvas(reportElement, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: '#ffffff'
+        });
+        
+        // 다시 화면 밖으로 치우기
+        reportElement.style.left = "-9999px";
+
+        const imgData = canvas.toDataURL('image/png');
+
+        // 5. 찍은 사진을 jsPDF를 이용해 A4 용지에 맞게 분할하여 PDF로 만들기
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        
+        const imgWidth = 210; // A4 가로
+        const pageHeight = 295; // A4 세로
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        // 첫 페이지 붙이기
+        doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+
+        // 내용이 길면 새 페이지 추가해서 이어 붙이기
+        while (heightLeft >= 0) {
+          position = heightLeft - imgHeight;
+          doc.addPage();
+          doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+
+        // 6. 파일 다운로드 창 띄우기
+        doc.save(`PathLearn_Report_${new Date().toISOString().slice(0,10)}.pdf`);
+        
+      } catch (error) {
+        console.error("PDF 생성 중 에러 발생:", error);
+        alert("PDF 생성 중 오류가 발생했습니다.");
+      } finally {
+        // 7. 버튼 상태 원상 복구
+        pdfBtn.textContent = originalText;
+        pdfBtn.disabled = false;
+      }
+    });
+  }
+});
 
 
 
