@@ -326,8 +326,8 @@ function bindEvents() {
   el.graphBoxShapeBtn?.addEventListener("click", () => setGraphNodeShape("box"));
   el.focusMindmapBtn?.addEventListener("click", () => setFocusGraphLayout("mindmap"));
   el.focusTreeBtn?.addEventListener("click", () => setFocusGraphLayout("tree"));
-  el.graphTreeScaleInBtn?.addEventListener("click", () => changeGraphTreeScale(0.25));
-  el.graphTreeScaleOutBtn?.addEventListener("click", () => changeGraphTreeScale(-0.25));
+  
+  // ❌ [교정] 기존 트리 크기 조절 버튼 클릭 리스너(In/Out) 2줄은 마우스 휠 줌 대체로 인해 제거되었습니다.
   el.graphResizeModeBtn?.addEventListener("click", toggleGraphResizeMode);
 
   el.roomDrawerToggle?.addEventListener("click", () => toggleRoomDrawer());
@@ -351,6 +351,83 @@ function bindEvents() {
   });
   document.addEventListener("dragover", onDocumentTreeDragOver);
   setupTreeGraphResizeObserver();
+
+
+  // ==========================================================================
+  // 🎛️ [올인원 통합] 지식 트리 그래프 캔버스 휠 줌 & 드래그 앤 팬 인터랙션 코어
+  // ==========================================================================
+  const treeRootContainer = document.getElementById("treeRoot");
+  
+  if (treeRootContainer) {
+    // ------------------------------------------------------------------------
+    // 🔄 1. 마우스 휠 스크롤 축소/확대(Zoom In/Out) 엔진 (여기가 유실되었었습니다!)
+    // ------------------------------------------------------------------------
+    treeRootContainer.addEventListener("wheel", (e) => {
+      if (state.treeViewMode !== "graph") return;
+      e.preventDefault(); // 브라우저 메인 윈도우 스크롤 다운 버그 차단
+      
+      const scaleIntensity = 0.05; // 줌 감도 민감도 세팅
+      if (e.deltaY < 0) {
+        changeGraphTreeScale(scaleIntensity);  // 휠 업: 확대
+      } else {
+        changeGraphTreeScale(-scaleIntensity); // 휠 다운: 축소
+      }
+    }, { passive: false });
+
+    // ------------------------------------------------------------------------
+    // 🖐️ 2. 빈 공간 드래그 스크롤(Drag & Pan) 엔진 (엘리먼트 유실 방지 최종본)
+    // ------------------------------------------------------------------------
+    let isDown = false;
+    let startX, startY;
+    let scrollLeft, scrollTop;
+
+    // 마우스 꾹 누를 때
+    treeRootContainer.addEventListener("pointerdown", (e) => {
+      if (state.treeViewMode !== "graph" || state.dragState.active) return;
+      if (e.target.closest(".tree-node-group") || e.target.closest("button")) return;
+
+      isDown = true;
+      treeRootContainer.classList.add("grabbing"); 
+      
+      // 🎯 매번 증발하는 자식 대신, 영구적으로 살아있는 treeRootContainer 기준 좌표와 스크롤을 맵핑합니다.
+      startX = e.pageX - treeRootContainer.offsetLeft;
+      startY = e.pageY - treeRootContainer.offsetTop;
+      scrollLeft = treeRootContainer.scrollLeft;
+      scrollTop = treeRootContainer.scrollTop;
+      
+      treeRootContainer.setPointerCapture(e.pointerId);
+    });
+
+    // 누른 채 밀 때
+    treeRootContainer.addEventListener("pointermove", (e) => {
+      if (!isDown) return;
+      e.preventDefault();
+      
+      const x = e.pageX - treeRootContainer.offsetLeft;
+      const y = e.pageY - treeRootContainer.offsetTop;
+      
+      // ⚡ 피그마 특유의 쫀득한 가속도를 위해 1.5배 보정치를 주었습니다.
+      const walkX = (x - startX) * 1.5; 
+      const walkY = (y - startY) * 1.5;
+      
+      // 🎯 부모 컨테이너의 스크롤을 직접 다이렉트로 밀어버립니다.
+      treeRootContainer.scrollLeft = scrollLeft - walkX;
+      treeRootContainer.scrollTop = scrollTop - walkY;
+    });
+
+    // 드래그 뗄 때 리셋
+    const stopDragging = (e) => {
+      if (!isDown) return;
+      isDown = false;
+      treeRootContainer.classList.remove("grabbing");
+      if (treeRootContainer.hasPointerCapture(e.pointerId)) {
+        treeRootContainer.releasePointerCapture(e.pointerId);
+      }
+    };
+
+    treeRootContainer.addEventListener("pointerup", stopDragging);
+    treeRootContainer.addEventListener("pointerleave", stopDragging);
+  }
 }
 
 function setupTreeGraphResizeObserver() {
@@ -5631,7 +5708,7 @@ function getGraphRenderOptions() {
     labeledDepth,
     prominentDepth: semanticCompact && labeledDepth >= 1 ? 1 : -1,
     compactDotRadius: Math.round(8 + dotProgress * 3),
-    radius: Math.round((semanticCompact ? 24 : 30) * scale),
+    radius: Math.round((semanticCompact ? 24 : 36) * scale),
     circleLabelLength: Math.max(7, Math.floor(9 * scale)),
     minBoxWidth: Math.round((state.treeFocusMode ? 188 : 158) * scale),
     maxCharsPerLine: Math.max(12, Math.floor((state.treeFocusMode ? 24 : 20) * scale)),
@@ -5661,7 +5738,11 @@ function getGraphNodeSize(nodeId) {
 
 function getCircleNodeTitle(title, maxLength) {
   const clean = String(title || "제목 없음").trim();
-  return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean;
+  
+  // 💡 원이 커졌으므로 4에서 5 또는 6으로 키우면 글자가 더 많이 보입니다!
+  const safeLength = Math.min(maxLength, 6); 
+  
+  return clean.length > safeLength ? `${clean.slice(0, safeLength)}..` : clean;
 }
 
 function getGraphDisplayTitle(node) {
@@ -5967,7 +6048,7 @@ function syncChatInputAvailability() {
       submitButton.innerHTML = `<svg class="animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>`;
     } else {
       // 평상시: 세련된 오른쪽 화살표 아이콘
-      submitButton.innerHTML = `<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"></path></svg>`;
+      submitButton.innerHTML = `<svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18"></path></svg>`;
     }
   }
 

@@ -50,7 +50,6 @@
       <div class="brand-mark">PL</div>
       <div class="brand-text">
         <strong>PathLearn AI</strong>
-        <span>Conversation Navigation Studio</span>
       </div>
     </div>
     
@@ -187,15 +186,15 @@
       <section id="appViewInner" class="app">
         <aside class="panel tree-panel glass">
           <div class="panel-head">
-            <h3>대화 경로 트리</h3>
+            <h3>대화 경로 트리 <span class="tooltip-trigger">ⓘ</span></h3>
             <div class="tree-head-controls">
               <div class="mode-toggle">
                 <button id="treeListModeBtn" class="mode-btn active" type="button">목록형</button>
                 <button id="treeGraphModeBtn" class="mode-btn" type="button">그래프형</button>
+                
               </div>
               <button id="treeFocusModeBtn" class="zoom-btn tree-focus-mode-btn" type="button">확대</button>
               <button id="treeFocusCloseBtn" class="tree-focus-close-btn" type="button" aria-label="큰 화면 닫기">×</button>
-              <span id="nodeCount" class="counter">0 Nodes</span>
             </div>
           </div>
           <div class="tree-toolbar">
@@ -204,6 +203,7 @@
               <button id="markImportantNodeBtn" type="button" class="btn btn-ghost btn-sm tree-important-btn" disabled>마크업</button>
               <button id="deleteSelectedNodeBtn" type="button" class="btn btn-ghost btn-sm tree-delete-btn">선택 삭제</button>
             </div>
+            <span id="treeBuildStatus" class="tree-build-status completed">트리 구성 완료됨</span>
           </div>
           <div id="treeRoot" class="tree-root"></div>
           <div id="graphZoomFooter" class="graph-zoom-controls hidden">
@@ -220,7 +220,7 @@
             </select>
             <button id="graphZoomInBtn" class="zoom-btn" type="button" title="확대">+</button>
             <button id="graphZoomResetBtn" class="zoom-btn" type="button" title="원래 크기">초기화</button>
-            <span id="treeBuildStatus" class="tree-build-status completed">트리 구성 완료됨</span>
+
             <div class="graph-shape-toggle" aria-label="노드 모양 선택">
               <button id="graphCircleShapeBtn" class="shape-btn active" type="button">원형</button>
               <button id="graphBoxShapeBtn" class="shape-btn" type="button">사각형</button>
@@ -229,11 +229,9 @@
               <button id="focusMindmapBtn" class="shape-btn active" type="button">마인드맵</button>
               <button id="focusTreeBtn" class="shape-btn" type="button">계층형</button>
             </div>
-            <div class="graph-tree-scale-controls" aria-label="전체 트리 크기">
-              <button id="graphTreeScaleOutBtn" class="zoom-btn" type="button" title="전체 트리 작게">트리-</button>
-              <span id="graphTreeScaleLevel" class="zoom-level">100%</span>
-              <button id="graphTreeScaleInBtn" class="zoom-btn" type="button" title="전체 트리 크게">트리+</button>
-            </div>
+            <div class="graph-tree-scale-controls" aria-label="전체 트리 크기" style="display: none !important;">
+            <span id="graphTreeScaleLevel" class="zoom-level">100%</span>
+          </div>
             <button id="graphResizeModeBtn" class="zoom-btn graph-resize-mode-btn" type="button" title="선택 노드 크기 조절">크기조절</button>
           </div>
         </aside>

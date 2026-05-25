@@ -197,7 +197,7 @@ p {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1rem clamp(1rem, 3vw, 2.4rem);
+  padding: 0.4rem clamp(1rem, 3vw, 2.4rem);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -555,7 +555,7 @@ input:focus {
   display: grid;
   grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
   gap: 0.65rem;
-  min-height: calc(100vh - 168px);
+  min-height: calc(100vh - px);
   height: 100%;
   overflow: hidden;
   animation: fadeIn 0.4s ease;
@@ -2773,5 +2773,243 @@ body {
   background-color: transparent !important;
   color: #cbd5e1 !important;
   font-size: 13px !important;
+  padding: 0 !important;
+}
+
+/* ==========================================================================
+   🌳 트리 구성 상태 표시기 배경 하이라이트 완전 제거
+   ========================================================================== */
+
+#treeBuildStatus {
+  background: none !important;       /* ❌ 눈에 거슬리던 뚱뚱한 배경색 박멸 */
+  background-color: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;             /* 불필요한 패딩 제거 */
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.3px !important;
+}
+
+/* 🌓 기본 테마 (다크 모드) 일 때 - 민트색 글씨만 노출 */
+body[data-theme="default"] #treeBuildStatus.completed {
+  color: #37c6a5 !important;        
+}
+body[data-theme="default"] #treeBuildStatus.processing {
+  color: #fbbf24 !important;        
+}
+
+/* ☀️ 라이트 테마 (라벤더, 미스트, 세이지 등) 일 때 - 진한 그린 글씨만 노출 */
+body:not([data-theme="default"]) #treeBuildStatus.completed {
+  color: #24892c !important;        
+}
+body:not([data-theme="default"]) #treeBuildStatus.processing {
+  color: #d97706 !important;        
+}
+/* ==========================================================================
+   🎯 가이드 텍스트 ⓘ 아이콘 호버 툴팁 초정밀 교정 (레이아웃 파괴 방지)
+   ========================================================================== */
+
+/* 1. 기준점을 잡기 위해 트리 패널에 relative 부여 */
+.tree-panel {
+  position: relative !important;
+}
+
+/* 2. ⓘ 아이콘 기본 감성 스타일링 */
+.tooltip-trigger {
+  cursor: pointer !important;
+  font-size: 14px !important;
+  color: #64748b !important;
+  margin-left: 4px !important;
+  display: inline-flex !important;
+  vertical-align: middle !important;
+  transition: color 0.15s ease !important;
+}
+.tooltip-trigger:hover {
+  color: #43dab8 !important; /* 마우스 올리면 활성화 틴트 */
+}
+
+/* 3. 🔥 [핵심] 평소에는 가이드 텍스트를 흐름에서 이탈시켜 공중부양 말풍선으로 전환 */
+#treeEditHint.tree-edit-hint {
+  position: absolute !important;
+  top: 48px !important;           /* 타이틀 살짝 아래 배치 */
+  left: 16px !important;
+  z-index: 9999 !important;
+  width: 250px !important;
+  padding: 8px 12px !important;
+  background-color: #1e293b !important; /* 묵직한 다크 슬레이트 */
+  color: #ffffff !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  
+  /* 기본 상태 숨김 처리 */
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(-4px) !important;
+  transition: opacity 0.15s ease, transform 0.15s ease !important;
+}
+
+/* 4. 🔥 [치트키] ⓘ 아이콘에 마우스를 올리는 순간에만 말풍선 강제 소환 */
+.tree-panel:has(.tooltip-trigger:hover) #treeEditHint.tree-edit-hint {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transform: translateY(0) !important;
+}
+
+/* 1. 바디는 꽉 채우되, 100vh 대신 고정된 영역으로 잡습니다 */
+body.app-active {
+  position: fixed !important;
+  inset: 0 !important; /* 상하좌우 0으로 고정 */
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+/* 2. 상단바는 위쪽으로 밀착 */
+.topbar {
+  flex: 0 0 46px !important;
+  width: 100% !important;
+}
+
+/* 3. 본문은 남은 공간 전부 점유 */
+.app {
+  flex: 1 !important;
+  width: 100% !important;
+  display: grid !important;
+  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  gap: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+.chat-panel {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+#chatFeed {
+  flex: 1 !important; /* 채팅 피드가 패널 내부 공간을 꽉 채우게 함 */
+  margin-top: 0 !important;
+  padding-top: 5px !important;
+}
+
+
+/* 1. 채팅 패널의 기본 패딩 중 상단만 0으로 만듭니다 */
+.chat-panel {
+  padding: 0.9rem !important;
+  padding-top: 0 !important; /* 상단 패딩 제거 */
+}
+
+/* 2. 채팅 피드(chat-feed)가 제목 영역이 사라진 자리를 꽉 채우게 강제합니다 */
+#chatFeed {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  align-content: start !important; /* 위에서부터 정렬 */
+  flex-grow: 1 !important;
+}
+
+/* 3. 만약 그래도 여백이 있다면, panel-head가 차지하던 공간 때문입니다. 이것도 아예 0으로 만듭니다 */
+.chat-panel .panel-head {
+  padding-bottom: 0 !important;
+  margin-bottom: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  display: none !important; /* 채팅창 상단 제목 바가 불필요하다면 아예 숨김 */
+}
+/* 채팅 패널과 상단 영역 사이의 공백을 물리적으로 제거 */
+.chat-panel {
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 0 0.9rem 0.9rem 0.9rem !important; /* 위쪽 패딩만 0 */
+}
+
+/* 제목바 영역이 숨겨지면서 생긴 잔여 공간까지 강제로 0으로 압축 */
+.chat-panel .panel-head {
+  display: none !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* 채팅 피드가 최상단부터 시작하도록 마진/패딩 제거 */
+#chatFeed {
+  margin-top: 0 !important;
+  padding-top: 0px !important; /* 너무 딱 붙으면 답답하니 최소한의 여백만 */
+  flex: 1 !important;
+}
+/* 1. 상단바를 제외한 본문 영역을 전체 화면에 딱 맞춥니다 */
+body.app-active {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+/* 2. main은 상단바를 뺀 나머지 공간을 무조건 100% 채웁니다 */
+body.app-active main {
+  flex: 1 !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important; /* 중요: 내부 컨텐츠가 삐져나가는 것을 방지 */
+}
+
+/* 3. app(그리드 영역)이 main의 높이를 100% 상속받게 함 */
+.app {
+  flex: 1 !important;
+  height: 100% !important;
+  display: grid !important;
+  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  gap: 0.5rem !important;
+  padding: 0.5rem !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+/* 1. 전체 앱 컨테이너: 배경색이 비치도록 아주 살짝만 여백을 줌 */
+.app {
+  display: grid !important;
+  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  gap: 12px !important;      /* 💡 패널 간격: 12px 정도가 가장 예쁨 */
+  padding: 12px !important;  /* 💡 외곽 여백: 12px 주어 딱딱함을 해소 */
+  overflow: hidden !important;
+  background: transparent !important;
+}
+
+/* 2. 각 패널: 모서리를 둥글게(24px) 깎아서 '네모네모' 탈출 */
+.panel {
+  border-radius: 24px !important; 
+  padding: 1.2rem !important;     /* 💡 패널 내부의 글자가 너무 붙지 않게 여유 부여 */
+  box-shadow: 0 10px 30px rgba(0,0,0,0.08) !important; /* 💡 은은한 그림자 추가 */
+}
+
+/* 3. 리사이즈 핸들: 둥근 패널 사이에 묻히도록 투명하게 처리 */
+.resize-handle {
+  background: transparent !important;
+  border: none !important;
+}
+/* 1. 패널 사이의 간격(gap)과 바깥쪽 여백(padding) 조정 */
+.app {
+  /* gap: 12px 또는 0.5rem 등 원하는 만큼 조정하세요. 0이면 완전히 붙습니다. */
+  gap: 0px !important; 
+  /* 전체적인 겉 여백을 8px로 설정 */
+  padding: 8px !important; 
+}
+
+/* 2. 패널 내부 여백(padding) 조정 */
+.panel {
+  /* 패널 안쪽 내용물이 너무 딱 붙는 게 싫다면 0.8rem 정도로 유지하세요 */
+  padding: 0.8rem !important; 
+}
+
+/* 3. 혹시나 남는 마지막 1픽셀까지 다 잡기 */
+.app-wrap {
+  margin: 0 !important;
   padding: 0 !important;
 }
