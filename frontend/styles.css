@@ -2621,7 +2621,7 @@ body.tree-dragging * {
 }
 
 body {
-  letter-spacing: -0.02em !important; /* 💡 글자 자간을 살짝 조여주면 폰트가 훨씬 세련되게 변합니다 */
+  letter-spacing: normal !important; /* 💡 글자 자간을 살짝 조여주면 폰트가 훨씬 세련되게 변합니다 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -3012,4 +3012,176 @@ body.app-active main {
 .app-wrap {
   margin: 0 !important;
   padding: 0 !important;
+}
+/* ==========================================================================
+   🧠 제미나이 & 챗GPT 스타일 프리미엄 타이포그래피 (다크/라이트 테마 완벽 호환)
+   ========================================================================== */
+
+/* 전체 공통 레이아웃 (크기, 행간 등 구조적 스펙) */
+.chat-feed .bubble.ai, 
+#extractResultContent, 
+.pdf-markdown-content {
+  font-size: 15.5px !important;
+  line-height: 1.8 !important;
+  font-weight: 400 !important;
+}
+
+/* --------------------------------------------------------------------------
+   🌓 1. 기본 테마 (다크 모드) 전용 글자색 세팅
+   -------------------------------------------------------------------------- */
+body[data-theme="default"] .chat-feed .bubble.ai, 
+body[data-theme="default"] #extractResultContent {
+  color: #f1f5f9 !important;        /* 💡 어두운 배경엔 화사하고 눈이 편한 연회색 */
+}
+
+body[data-theme="default"] .chat-feed .bubble.ai li, 
+body[data-theme="default"] #extractResultContent li {
+  color: #cbd5e1 !important;        /* 리스트 항목 글자색 */
+}
+
+body[data-theme="default"] .chat-feed .bubble.ai strong, 
+body[data-theme="default"] #extractResultContent strong {
+  color: #ffffff !important;        /* 볼드체는 완전 새하얗게 강조 */
+}
+
+/* --------------------------------------------------------------------------
+   ☀️ 2. 라이트 테마 (미스트, 세이지, 라벤더) 전용 글자색 세팅
+   -------------------------------------------------------------------------- */
+body[data-theme="mist"] .chat-feed .bubble.ai, body[data-theme="mist"] #extractResultContent,
+body[data-theme="sage"] .chat-feed .bubble.ai, body[data-theme="sage"] #extractResultContent,
+body[data-theme="lavender"] .chat-feed .bubble.ai, body[data-theme="lavender"] #extractResultContent {
+  color: #1e293b !important;        /* 💡 밝은 배경엔 가독성 높은 묵직한 다크 슬레이트 */
+}
+
+body[data-theme="mist"] .chat-feed .bubble.ai li, body[data-theme="mist"] #extractResultContent li,
+body[data-theme="sage"] .chat-feed .bubble.ai li, body[data-theme="sage"] #extractResultContent li,
+body[data-theme="lavender"] .chat-feed .bubble.ai li, body[data-theme="lavender"] #extractResultContent li {
+  color: #334155 !important;
+}
+
+body[data-theme="mist"] .chat-feed .bubble.ai strong, body[data-theme="mist"] #extractResultContent strong,
+body[data-theme="sage"] .chat-feed .bubble.ai strong, body[data-theme="sage"] #extractResultContent strong,
+body[data-theme="lavender"] .chat-feed .bubble.ai strong, body[data-theme="lavender"] #extractResultContent strong {
+  color: #0f172a !important;        /* 볼드체는 완전 깊고 진한 블랙 */
+}
+
+/* --------------------------------------------------------------------------
+   📦 3. 여백 및 목록 정렬 구조 (기존 스펙 유지)
+   -------------------------------------------------------------------------- */
+.chat-feed .bubble.ai p, #extractResultContent p {
+  margin-top: 0 !important;
+  margin-bottom: 18px !important;
+}
+
+.chat-feed .bubble.ai ol, #extractResultContent ol {
+  list-style-type: decimal !important;
+  padding-left: 24px !important;
+  margin-top: 8px !important;
+  margin-bottom: 20px !important;
+}
+
+.chat-feed .bubble.ai ul, #extractResultContent ul {
+  list-style-type: disc !important;
+  padding-left: 24px !important;
+  margin-top: 8px !important;
+  margin-bottom: 20px !important;
+}
+
+.chat-feed .bubble.ai li, #extractResultContent li {
+  display: list-item !important;
+  list-style-position: outside !important;
+  margin-bottom: 16px !important;
+  padding-left: 6px !important;
+}
+
+.chat-feed .bubble.ai strong, #extractResultContent strong {
+  font-weight: 700 !important;
+  background: none !important;
+  padding: 0 !important;
+}
+
+/* 💻 인라인 코드 및 소스코드 박스 스타일 */
+.chat-feed .bubble.ai code, #extractResultContent code {
+  font-family: 'Fira Code', 'Courier New', monospace !important;
+  background-color: rgba(241, 245, 249, 0.12) !important;
+  color: #ff7a45 !important;        /* 다크모드에서도 잘 보이는 오렌지 톤 */
+  padding: 2px 6px !important;
+  font-size: 13px !important;
+  border-radius: 4px !important;
+  font-weight: 600 !important;
+}
+
+body[data-theme="mist"] code, body[data-theme="sage"] code, body[data-theme="lavender"] code {
+  background-color: #f1f5f9 !important; /* 라이트 모드일 땐 연회색 배경 */
+  color: #ea580c !important;
+}
+
+.chat-feed .bubble.ai pre, #extractResultContent pre {
+  background-color: #0f172a !important;
+  padding: 18px !important;
+  border-radius: 8px !important;
+  overflow-x: auto !important;
+  margin: 18px 0 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+.chat-feed .bubble.ai pre code, #extractResultContent pre code {
+  font-family: 'Fira Code', 'Courier New', monospace !important;
+  background-color: transparent !important;
+  color: #cbd5e1 !important;
+  font-size: 13px !important;
+  padding: 0 !important;
+}
+/* ==========================================================================
+   🧠 학습 인사이트 패널 (Selected Node & Insights) 테마 반응형 교정
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   🌓 1. 기본 테마 (다크 모드) - 학습 인사이트 글자색 밝게 변경
+   -------------------------------------------------------------------------- */
+/* 패널 자체의 배경색과 기본 글자색 조정 */
+body[data-theme="default"] .insight-panel {
+  color: #f1f5f9 !important;        /* 기본 연회색 */
+}
+
+/* 선택 노드 제목 (예: 데이터베이스 정의) */
+body[data-theme="default"] #selectedNodeTitle {
+  color: #ffffff !important;        /* 완전 새하얗게 */
+}
+
+/* 선택 노드 메타 정보 (Depth, Parent) 및 요약 내용 */
+body[data-theme="default"] #selectedNodeMeta,
+body[data-theme="default"] .summary-placeholder,
+body[data-theme="default"] .summary-item-detail {
+  color: #cbd5e1 !important;        /* 읽기 편한 연회색 */
+}
+
+/* 요약 아이템 키워드 */
+body[data-theme="default"] .summary-item-keyword {
+  color: #ffffff !important;
+}
+
+/* 상태 알림바 (driftAlert) 기본 상태일 때 배경과 글자색 */
+body[data-theme="default"] #driftAlert.alert {
+  color: #f1f5f9 !important;
+  background-color: rgba(241, 245, 249, 0.08) !important; /* 은은한 투명 배경 */
+  border-color: rgba(241, 245, 249, 0.15) !important;
+}
+
+/* --------------------------------------------------------------------------
+   ☀️ 2. 라이트 테마 (미스트, 세이지, 라벤더) - 학습 인사이트 글자색 어둡게 고정
+   -------------------------------------------------------------------------- */
+body[data-theme="mist"] #selectedNodeTitle,
+body[data-theme="sage"] #selectedNodeTitle,
+body[data-theme="lavender"] #selectedNodeTitle {
+  color: #0f172a !important;        /* 깊은 블랙 */
+}
+
+body[data-theme="mist"] #selectedNodeMeta,
+body[data-theme="mist"] .summary-item-detail,
+body[data-theme="sage"] #selectedNodeMeta,
+body[data-theme="sage"] .summary-item-detail,
+body[data-theme="lavender"] #selectedNodeMeta,
+body[data-theme="lavender"] .summary-item-detail {
+  color: #334155 !important;        /* 진한 다크 슬레이트 */
 }
