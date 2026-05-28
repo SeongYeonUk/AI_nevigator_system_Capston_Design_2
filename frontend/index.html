@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260528-chat-full-resize" />
 </head>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -193,7 +193,14 @@
                 <button id="treeGraphModeBtn" class="mode-btn" type="button">그래프형</button>
                 
               </div>
-              <button id="treeFocusModeBtn" class="zoom-btn tree-focus-mode-btn" type="button">확대</button>
+              <button id="treeFocusModeBtn" class="zoom-btn tree-focus-mode-btn" type="button">전체 화면</button>
+              <button id="treeCollapseBtn" class="panel-collapse-btn" type="button" title="트리 접기" aria-label="트리 패널 접기">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 4v16"></path>
+                  <path d="M19 12H8"></path>
+                  <path d="M12 8l-4 4 4 4"></path>
+                </svg>
+              </button>
               <button id="treeFocusCloseBtn" class="tree-focus-close-btn" type="button" aria-label="큰 화면 닫기">×</button>
             </div>
           </div>
@@ -255,6 +262,13 @@
         <aside class="panel insight-panel glass">
           <div class="panel-head">
             <h3>학습 인사이트</h3>
+            <button id="insightCollapseBtn" class="panel-collapse-btn" type="button" title="인사이트 접기" aria-label="학습 인사이트 패널 접기">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 4v16"></path>
+                <path d="M8 12h11"></path>
+                <path d="M15 8l4 4-4 4"></path>
+              </svg>
+            </button>
           </div>
 
           <div class="insight-block selected-node-block">
@@ -284,6 +298,20 @@
             <div id="childNodeRecommendationList" class="child-recommendation-list">선택 노드의 하위 주제를 추천합니다.</div>
           </div>
         </aside>
+        <button id="treeExpandBtn" class="panel-expand-btn panel-expand-left" type="button" title="트리 펼치기" aria-label="트리 패널 펼치기">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19 4v16"></path>
+            <path d="M5 12h11"></path>
+            <path d="M12 8l4 4-4 4"></path>
+          </svg>
+        </button>
+        <button id="insightExpandBtn" class="panel-expand-btn panel-expand-right" type="button" title="인사이트 펼치기" aria-label="학습 인사이트 패널 펼치기">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 4v16"></path>
+            <path d="M19 12H8"></path>
+            <path d="M12 8l-4 4 4 4"></path>
+          </svg>
+        </button>
       </section>
     </section>
 
@@ -433,7 +461,7 @@
 
     </div>
   </main>
-  <script type="module" src="js/main.js?v=20260528-root-topic-check-11"></script>
+  <script type="module" src="js/main.js?v=20260528-chat-full-resize"></script>
   <script>
     (function setupAuthViewFallback() {
       function toggleSection(targetView) {

@@ -553,7 +553,7 @@ input:focus {
 
 .app {
   display: grid;
-  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  grid-template-columns: var(--tree-panel-width) 10px minmax(0, 1fr) 10px var(--insight-panel-width);
   gap: 0.65rem;
   min-height: calc(100vh - px);
   height: 100%;
@@ -1105,6 +1105,12 @@ body.tree-focus-active .tree-node-label {
   color: var(--control-active-text);
   background: var(--control-active-bg);
   font-weight: 800;
+}
+
+.tree-focus-mode-btn {
+  min-width: 70px;
+  padding-inline: 0.55rem;
+  white-space: nowrap;
 }
 
 .tree-focus-close-btn {
@@ -2901,7 +2907,7 @@ body.app-active {
   flex: 1 !important;
   width: 100% !important;
   display: grid !important;
-  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  grid-template-columns: var(--tree-panel-width) 10px minmax(0, 1fr) 10px var(--insight-panel-width);
   gap: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
@@ -2988,7 +2994,7 @@ body.app-active main {
   flex: 1 !important;
   height: 100% !important;
   display: grid !important;
-  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  grid-template-columns: var(--tree-panel-width) 10px minmax(0, 1fr) 10px var(--insight-panel-width);
   gap: 0.5rem !important;
   padding: 0.5rem !important;
   overflow: hidden !important;
@@ -2997,7 +3003,7 @@ body.app-active main {
 /* 1. 전체 앱 컨테이너: 배경색이 비치도록 아주 살짝만 여백을 줌 */
 .app {
   display: grid !important;
-  grid-template-columns: var(--tree-panel-width) 10px minmax(360px, 1fr) 10px var(--insight-panel-width);
+  grid-template-columns: var(--tree-panel-width) 10px minmax(0, 1fr) 10px var(--insight-panel-width);
   gap: 12px !important;      /* 💡 패널 간격: 12px 정도가 가장 예쁨 */
   padding: 12px !important;  /* 💡 외곽 여백: 12px 주어 딱딱함을 해소 */
   overflow: hidden !important;
@@ -3206,4 +3212,138 @@ body[data-theme="sage"] .summary-item-detail,
 body[data-theme="lavender"] #selectedNodeMeta,
 body[data-theme="lavender"] .summary-item-detail {
   color: #334155 !important;        /* 진한 다크 슬레이트 */
+}
+
+/* 패널 접기/펼치기: 화면 표시만 전환하고 내부 상태와 API 흐름은 유지 */
+.panel-collapse-btn,
+.panel-expand-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 76%, white 5%);
+  color: color-mix(in srgb, var(--muted) 72%, var(--text));
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.panel-collapse-btn:hover,
+.panel-expand-btn:hover {
+  background: var(--control-bg-hover);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
+.panel-collapse-btn svg,
+.panel-expand-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.panel-expand-btn {
+  position: absolute;
+  top: 50%;
+  z-index: 45;
+  transform: translateY(-50%);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.panel-expand-left {
+  left: 13px;
+}
+
+.panel-expand-right {
+  right: 13px;
+}
+
+.tree-panel {
+  grid-column: 1;
+}
+
+#treeResizeHandle {
+  grid-column: 2;
+}
+
+.chat-panel {
+  grid-column: 3;
+}
+
+#insightResizeHandle {
+  grid-column: 4;
+}
+
+.insight-panel {
+  grid-column: 5;
+}
+
+body.tree-panel-collapsed .tree-panel,
+body.tree-panel-collapsed #treeResizeHandle,
+body.insight-panel-collapsed .insight-panel,
+body.insight-panel-collapsed #insightResizeHandle {
+  display: none !important;
+}
+
+body.tree-panel-collapsed .app {
+  grid-template-columns: 0 0 minmax(0, 1fr) 10px var(--insight-panel-width) !important;
+}
+
+body.insight-panel-collapsed .app {
+  grid-template-columns: var(--tree-panel-width) 10px minmax(0, 1fr) 0 0 !important;
+}
+
+body.tree-panel-collapsed.insight-panel-collapsed .app {
+  grid-template-columns: 0 0 minmax(0, 1fr) 0 0 !important;
+}
+
+body.tree-focus-active .panel-expand-btn,
+body:not(.app-active) .panel-expand-btn {
+  display: none !important;
+}
+
+body.tree-focus-active .panel-collapse-btn {
+  display: none !important;
+}
+
+@media (max-width: 1100px) {
+  body.tree-panel-collapsed .app,
+  body.insight-panel-collapsed .app,
+  body.tree-panel-collapsed.insight-panel-collapsed .app {
+    grid-template-columns: 1fr !important;
+  }
+
+  .tree-panel,
+  #treeResizeHandle,
+  .chat-panel,
+  #insightResizeHandle,
+  .insight-panel {
+    grid-column: 1;
+  }
+}
+
+/* 전체 화면 모드는 다른 앱 그리드 보정 규칙보다 항상 우선한다. */
+body.tree-focus-active .app {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  gap: 0 !important;
+  padding: 8px !important;
+}
+
+body.tree-focus-active .tree-panel {
+  display: grid !important;
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+}
+
+body.tree-focus-active .tree-root {
+  height: 100% !important;
+  min-height: 0 !important;
 }

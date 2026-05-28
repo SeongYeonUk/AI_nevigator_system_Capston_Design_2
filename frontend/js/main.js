@@ -60,6 +60,10 @@ const state = {
   graphTreeScale: 1,
   graphResizeMode: false,
   treeFocusMode: false,
+  treePanelCollapsed: false,
+  insightPanelCollapsed: false,
+  treePanelWidthBeforeCollapse: 340,
+  insightPanelWidthBeforeCollapse: 340,
   graphNodeSizeById: new Map(),
   collapsedGraphNodeIds: new Set(),
   importantNodeIds: new Set(),
@@ -164,6 +168,8 @@ const el = {
   treeGraphModeBtn: document.getElementById("treeGraphModeBtn"),
   treeFocusModeBtn: document.getElementById("treeFocusModeBtn"),
   treeFocusCloseBtn: document.getElementById("treeFocusCloseBtn"),
+  treeCollapseBtn: document.getElementById("treeCollapseBtn"),
+  treeExpandBtn: document.getElementById("treeExpandBtn"),
   nodeCount: document.getElementById("nodeCount"),
   graphZoomInBtn: document.getElementById("graphZoomInBtn"),
   graphZoomOutBtn: document.getElementById("graphZoomOutBtn"),
@@ -198,6 +204,8 @@ const el = {
   branchAlert: document.getElementById("branchAlert"),
   conversationSummaryList: document.getElementById("conversationSummaryList"),
   childNodeRecommendationList: document.getElementById("childNodeRecommendationList"),
+  insightCollapseBtn: document.getElementById("insightCollapseBtn"),
+  insightExpandBtn: document.getElementById("insightExpandBtn"),
   rebuildModalBackdrop: document.getElementById("rebuildModalBackdrop"),
   rebuildModalCloseBtn: document.getElementById("rebuildModalCloseBtn"),
   rebuildModalCancelBtn: document.getElementById("rebuildModalCancelBtn"),
@@ -322,6 +330,8 @@ function bindEvents() {
   el.treeGraphModeBtn?.addEventListener("click", () => setTreeViewMode("graph"));
   el.treeFocusModeBtn?.addEventListener("click", toggleTreeFocusMode);
   el.treeFocusCloseBtn?.addEventListener("click", () => setTreeFocusMode(false));
+  el.treeCollapseBtn?.addEventListener("click", () => setPanelCollapsed("tree", true));
+  el.treeExpandBtn?.addEventListener("click", () => setPanelCollapsed("tree", false));
   el.graphZoomInBtn?.addEventListener("click", () => changeGraphZoom(1));
   el.graphZoomOutBtn?.addEventListener("click", () => changeGraphZoom(-1));
   el.graphZoomSelect?.addEventListener("change", () => setGraphZoom(el.graphZoomSelect.value));
@@ -343,6 +353,8 @@ function bindEvents() {
   el.roomDeleteCancelBtn?.addEventListener("click", exitRoomDeleteMode);
   el.rebuildConversationBtn?.addEventListener("click", () => onOpenPathModal("rebuild"));
   el.extractKnowledgeBtn?.addEventListener("click", () => onOpenPathModal("extract"));
+  el.insightCollapseBtn?.addEventListener("click", () => setPanelCollapsed("insight", true));
+  el.insightExpandBtn?.addEventListener("click", () => setPanelCollapsed("insight", false));
   el.markImportantNodeBtn?.addEventListener("click", toggleSelectedNodeImportant);
   el.deleteSelectedNodeBtn?.addEventListener("click", onDeleteSelectedNode);
   el.rebuildModalCloseBtn?.addEventListener("click", closeRebuildModal);
@@ -811,6 +823,7 @@ function switchView(view, authTab) {
   state.currentView = view;
   document.body.classList.toggle("app-active", view === "app");
   document.body.classList.toggle("tree-focus-active", view === "app" && state.treeFocusMode);
+  applyPanelCollapseState();
 
   el.landingView?.classList.toggle("hidden", view !== "landing");
   el.authView?.classList.toggle("hidden", view !== "auth");
@@ -830,6 +843,52 @@ function switchView(view, authTab) {
   }
 
   syncChatInputAvailability();
+}
+
+function setPanelCollapsed(panel, collapsed) {
+  if (panel === "tree") {
+    if (collapsed) {
+      state.treePanelWidthBeforeCollapse = getPanelCssWidth("--tree-panel-width", state.treePanelWidthBeforeCollapse);
+    } else {
+      restorePanelWidth("--tree-panel-width", state.treePanelWidthBeforeCollapse);
+    }
+    state.treePanelCollapsed = Boolean(collapsed);
+    if (state.treePanelCollapsed && state.treeFocusMode) {
+      setTreeFocusMode(false);
+    }
+  } else if (panel === "insight") {
+    if (collapsed) {
+      state.insightPanelWidthBeforeCollapse = getPanelCssWidth("--insight-panel-width", state.insightPanelWidthBeforeCollapse);
+    } else {
+      restorePanelWidth("--insight-panel-width", state.insightPanelWidthBeforeCollapse);
+    }
+    state.insightPanelCollapsed = Boolean(collapsed);
+  } else {
+    return;
+  }
+
+  applyPanelCollapseState();
+  queueTreeGraphResize();
+}
+
+function applyPanelCollapseState() {
+  const isAppView = state.currentView === "app";
+  document.body.classList.toggle("tree-panel-collapsed", isAppView && state.treePanelCollapsed);
+  document.body.classList.toggle("insight-panel-collapsed", isAppView && state.insightPanelCollapsed);
+  el.treeCollapseBtn?.classList.toggle("hidden", !isAppView || state.treePanelCollapsed);
+  el.treeExpandBtn?.classList.toggle("hidden", !isAppView || !state.treePanelCollapsed);
+  el.insightCollapseBtn?.classList.toggle("hidden", !isAppView || state.insightPanelCollapsed);
+  el.insightExpandBtn?.classList.toggle("hidden", !isAppView || !state.insightPanelCollapsed);
+}
+
+function getPanelCssWidth(cssVar, fallback) {
+  const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(cssVar));
+  return Number.isFinite(value) && value > 80 ? value : fallback;
+}
+
+function restorePanelWidth(cssVar, width) {
+  const nextWidth = clamp(Number(width) || 340, 260, getPanelResizeMaxWidth());
+  document.documentElement.style.setProperty(cssVar, `${nextWidth}px`);
 }
 
 function toggleAuthTab(tab) {
@@ -1981,7 +2040,7 @@ function renderTree() {
   el.treeGraphModeBtn?.classList.toggle("active", state.treeViewMode === "graph");
   el.treeFocusModeBtn?.classList.toggle("active", state.treeFocusMode);
   if (el.treeFocusModeBtn) {
-    el.treeFocusModeBtn.textContent = "확대";
+    el.treeFocusModeBtn.textContent = "전체 화면";
   }
   el.treeFocusCloseBtn?.classList.toggle("hidden", !state.treeFocusMode);
   el.treeRoot.classList.toggle("graph-mode", state.treeViewMode === "graph");
@@ -5950,8 +6009,9 @@ function setupPanelResizers() {
     handle: el.treeResizeHandle,
     panel: el.treePanel,
     cssVar: "--tree-panel-width",
-    min: 260,
-    max: 760,
+    min: 0,
+    collapseAt: 72,
+    panelKey: "tree",
     direction: "right"
   });
 
@@ -5959,13 +6019,14 @@ function setupPanelResizers() {
     handle: el.insightResizeHandle,
     panel: el.insightPanel,
     cssVar: "--insight-panel-width",
-    min: 260,
-    max: 760,
+    min: 0,
+    collapseAt: 72,
+    panelKey: "insight",
     direction: "left"
   });
 }
 
-function setupSingleResizer({ handle, panel, cssVar, min, max, direction }) {
+function setupSingleResizer({ handle, panel, cssVar, min, collapseAt, panelKey, direction }) {
   if (!handle || !panel) {
     return;
   }
@@ -5981,7 +6042,16 @@ function setupSingleResizer({ handle, panel, cssVar, min, max, direction }) {
     const clientX = event.clientX ?? startX;
     const delta = clientX - startX;
     const signedDelta = direction === "left" ? -delta : delta;
-    const nextWidth = clamp(startWidth + signedDelta, min, max);
+    const nextWidth = clamp(startWidth + signedDelta, min, getPanelResizeMaxWidth());
+    if (nextWidth <= collapseAt) {
+      setPanelCollapsed(panelKey, true);
+      document.documentElement.style.setProperty(cssVar, "0px");
+      dragging = false;
+      handle.classList.remove("dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      return;
+    }
     document.documentElement.style.setProperty(cssVar, `${nextWidth}px`);
   };
 
@@ -5993,6 +6063,12 @@ function setupSingleResizer({ handle, panel, cssVar, min, max, direction }) {
   };
 
   handle.addEventListener("pointerdown", (event) => {
+    if (
+      (cssVar === "--tree-panel-width" && state.treePanelCollapsed)
+      || (cssVar === "--insight-panel-width" && state.insightPanelCollapsed)
+    ) {
+      return;
+    }
     dragging = true;
     startX = event.clientX;
     startWidth = panel.getBoundingClientRect().width;
@@ -6000,6 +6076,11 @@ function setupSingleResizer({ handle, panel, cssVar, min, max, direction }) {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   });
+}
+
+function getPanelResizeMaxWidth() {
+  const appWidth = document.getElementById("appViewInner")?.getBoundingClientRect().width || window.innerWidth || 1200;
+  return Math.max(260, Math.floor(appWidth - 24));
 }
 
 function makeBubble(role, text, timestamp, nodeId = null, isSelected = false) {
