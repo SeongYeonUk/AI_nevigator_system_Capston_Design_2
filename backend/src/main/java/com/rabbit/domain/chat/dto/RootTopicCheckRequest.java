@@ -10,4 +10,5 @@ import lombok.NoArgsConstructor;
 public class RootTopicCheckRequest {
     private Long parentId;
     private String message;
+    private String rootTopic;
 }

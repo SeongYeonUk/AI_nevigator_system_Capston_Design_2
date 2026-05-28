@@ -1893,6 +1893,7 @@ body.tree-dragging * {
   color: color-mix(in srgb, var(--text) 80%, var(--accent));
   font-weight: 800;
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 78%, transparent);
+  white-space: pre-line;
 }
 
 .alert.route-notice.branch {
@@ -1907,6 +1908,27 @@ body.tree-dragging * {
   background: linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, transparent), color-mix(in srgb, var(--accent) 10%, transparent));
   color: color-mix(in srgb, var(--text) 78%, var(--warning));
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warning) 82%, transparent);
+}
+
+.alert.route-notice.deepening {
+  border-color: color-mix(in srgb, var(--warning) 58%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--warning) 20%, transparent), color-mix(in srgb, var(--accent) 8%, transparent));
+  color: color-mix(in srgb, var(--text) 76%, var(--warning));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warning) 88%, transparent);
+}
+
+.alert.route-notice.leaf-bias {
+  border-color: color-mix(in srgb, var(--node-stroke) 58%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--node-stroke) 20%, transparent), color-mix(in srgb, var(--accent) 12%, transparent));
+  color: color-mix(in srgb, var(--text) 78%, var(--node-stroke));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--node-stroke) 88%, transparent);
+}
+
+.alert.route-notice.depth-mixed {
+  border-color: color-mix(in srgb, var(--warning) 48%, var(--node-stroke));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--warning) 18%, transparent), color-mix(in srgb, var(--node-stroke) 16%, transparent));
+  color: color-mix(in srgb, var(--text) 80%, var(--warning));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warning) 88%, transparent), inset 6px 0 0 color-mix(in srgb, var(--node-stroke) 65%, transparent);
 }
 
 .alert.route-notice.strong {

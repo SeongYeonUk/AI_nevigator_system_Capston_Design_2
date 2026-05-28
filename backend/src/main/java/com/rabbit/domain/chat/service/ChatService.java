@@ -85,6 +85,7 @@ public class ChatService {
             "why", "about", "please", "more", "detail"
     );
     private static final double ROOT_TOPIC_UNRELATED_THRESHOLD = 0.30;
+    private static final double ROOT_TOPIC_STRONG_RELATED_THRESHOLD = 0.78;
     private static final long ROOT_TOPIC_CHECK_CACHE_TTL_MS = 20_000L;
 
     private final RabbitGuardService rabbitGuardService;
@@ -183,30 +184,58 @@ public class ChatService {
                     .build();
         }
 
-        String cacheKey = buildRootTopicCheckCacheKey(roomId, request != null ? request.getParentId() : null, question);
+        String rootTopicOverride = defaultString(request != null ? request.getRootTopic() : "").trim();
+        String rootTopic = !rootTopicOverride.isBlank()
+                ? rootTopicOverride
+                : compactNodeTitle(rootUser);
+
+        String cacheKey = buildRootTopicCheckCacheKey(roomId, request != null ? request.getParentId() : null, rootTopic, question);
         RootTopicCheckResponse cached = getCachedRootTopicCheck(cacheKey);
         if (cached != null) {
             return cached;
         }
 
-        String rootTopic = defaultString(rootUser.getLevel1Topic()).isBlank()
-                ? compactNodeTitle(rootUser)
-                : rootUser.getLevel1Topic().trim();
-
-        List<String> rootContext = buildRootTopicCheckContext(history, rootUser);
+        List<String> rootContext = buildRootTopicCheckContext(history, rootUser, question);
         List<String> parentPathContext = buildParentPathContext(request != null ? request.getParentId() : null);
         double rootSimilarity = topicRelationshipScore(question, rootContext);
         double pathSimilarity = topicRelationshipScore(question, parentPathContext);
-        double bestSimilarity = Math.max(rootSimilarity, pathSimilarity);
-        boolean aiUnrelated = classifyRootTopicUnrelated(question, rootTopic, rootContext);
-        boolean unrelated = extractCheckTokens(question).size() >= 1
-                && bestSimilarity < ROOT_TOPIC_UNRELATED_THRESHOLD
-                && aiUnrelated;
-
+        double displaySimilarity = Math.max(rootSimilarity, pathSimilarity);
+        double parentPathLexical = tokenOverlapRatio(question, String.join(" ", parentPathContext));
+        Boolean directRootRelated = classifyDirectRootTopicRelated(question, rootTopic);
+        boolean aiUnrelated = classifyRootTopicUnrelated(question, rootTopic, rootContext, parentPathContext);
+        boolean directRootUnrelated = Boolean.FALSE.equals(directRootRelated);
+        boolean majorTopicUnrelated = classifyRootTopicUnrelatedByMajorLabels(question, rootTopic, rootContext, aiUnrelated);
+        boolean majorTopicDifferent = isDifferentRootMajorTopic(question, rootTopic, rootContext);
+        boolean hardMajorBoundaryUnrelated = isHardMajorBoundaryUnrelated(question, rootTopic);
+        boolean numericallyDistantMajorTopic = isNumericallyDistantMajorTopic(
+                question,
+                rootTopic,
+                displaySimilarity,
+                parentPathLexical
+        );
+        boolean lowRelationshipUnrelated = displaySimilarity < ROOT_TOPIC_UNRELATED_THRESHOLD
+                && parentPathLexical < 0.20
+                && !sameNormalizedTopicLabel(rootTopic, question)
+                && !Boolean.TRUE.equals(directRootRelated)
+                && (directRootUnrelated || majorTopicUnrelated || aiUnrelated || majorTopicDifferent);
+        boolean strongDistanceUnrelated = numericallyDistantMajorTopic;
+        boolean relatedToSelectedPath = parentPathLexical >= 0.20 && !majorTopicDifferent && !directRootUnrelated;
+        boolean hasQuestionSignal = extractCheckTokens(question).size() >= 1;
+        boolean unrelated = hasQuestionSignal
+                && !relatedToSelectedPath
+                && (
+                directRootUnrelated
+                        || majorTopicUnrelated
+                        || aiUnrelated
+                        || hardMajorBoundaryUnrelated
+                        || (majorTopicDifferent && (directRootUnrelated || majorTopicUnrelated || aiUnrelated))
+                        || lowRelationshipUnrelated
+                        || strongDistanceUnrelated
+        );
         RootTopicCheckResponse response = RootTopicCheckResponse.builder()
                 .unrelated(unrelated)
                 .rootTopic(rootTopic)
-                .similarity(Math.round(bestSimilarity * 1000.0) / 1000.0)
+                .similarity(Math.round(displaySimilarity * 1000.0) / 1000.0)
                 .message(unrelated ? "대주제와 관계가 낮은 질문으로 보입니다." : "")
                 .build();
         rootTopicCheckCache.put(cacheKey, new RootTopicCheckCacheEntry(response, System.currentTimeMillis()));
@@ -225,12 +254,16 @@ public class ChatService {
         return entry.response();
     }
 
-    private String buildRootTopicCheckCacheKey(Long roomId, Long parentId, String question) {
+    private String buildRootTopicCheckCacheKey(Long roomId, Long parentId, String rootTopic, String question) {
+        String normalizedRootTopic = defaultString(rootTopic)
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
         String normalizedQuestion = defaultString(question)
                 .replaceAll("\\s+", " ")
                 .trim()
                 .toLowerCase(Locale.ROOT);
-        return roomId + "|" + parentId + "|" + normalizedQuestion;
+        return roomId + "|" + parentId + "|" + normalizedRootTopic + "|" + normalizedQuestion;
     }
 
     @Transactional
@@ -245,6 +278,11 @@ public class ChatService {
 
     @Transactional
     public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage, boolean forceCreateUnrelated, boolean skipRootTopicGuard) {
+        return ask(authorization, roomId, parentId, userMessage, forceCreateUnrelated, skipRootTopicGuard, null);
+    }
+
+    @Transactional
+    public ChatResponse ask(String authorization, Long roomId, Long parentId, String userMessage, boolean forceCreateUnrelated, boolean skipRootTopicGuard, String rootTopicOverride) {
         // 1. 권한 및 대화방 검증
         validateAuthorization(authorization);
 
@@ -255,7 +293,7 @@ public class ChatService {
             RootTopicCheckResponse rootCheck = checkRootTopicRelation(
                     authorization,
                     roomId,
-                    new RootTopicCheckRequest(parentId, userMessage)
+                    new RootTopicCheckRequest(parentId, userMessage, rootTopicOverride)
             );
             if (rootCheck.isUnrelated()) {
                 throw new IllegalArgumentException(
@@ -584,7 +622,7 @@ public class ChatService {
                             RootTopicCheckResponse rootCheck = checkRootTopicRelation(
                                     authorization,
                                     roomId,
-                                    new RootTopicCheckRequest(requestedParentId, userMessage)
+                                    new RootTopicCheckRequest(requestedParentId, userMessage, null)
                             );
                             keepRequestedParent = rootCheck.isUnrelated();
                         }
@@ -2325,8 +2363,9 @@ public class ChatService {
         return normalized.substring(0, maxLength - 3).trim() + "...";
     }
 
-    private List<String> buildRootTopicCheckContext(List<ChatMessage> history, ChatMessage rootUser) {
+    private List<String> buildRootTopicCheckContext(List<ChatMessage> history, ChatMessage rootUser, String currentQuestion) {
         List<String> context = new ArrayList<>();
+        String normalizedCurrentQuestion = normalizeForRootTopicCheck(currentQuestion);
         addIfNotBlank(context, rootUser.getLevel1Topic());
         addIfNotBlank(context, rootUser.getNodeTitle());
         addIfNotBlank(context, stripSystemPrefix(defaultString(rootUser.getContent())));
@@ -2334,6 +2373,7 @@ public class ChatService {
         history.stream()
                 .filter(message -> message.getSender() == SenderRole.USER)
                 .filter(message -> message.getDepth() <= 1)
+                .filter(message -> !normalizeForRootTopicCheck(stripSystemPrefix(defaultString(message.getContent()))).equals(normalizedCurrentQuestion))
                 .limit(12)
                 .forEach(message -> {
                     addIfNotBlank(context, message.getLevel1Topic());
@@ -2342,6 +2382,13 @@ public class ChatService {
                     addIfNotBlank(context, stripSystemPrefix(defaultString(message.getContent())));
                 });
         return context;
+    }
+
+    private String normalizeForRootTopicCheck(String value) {
+        return defaultString(value)
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
     }
 
     private List<String> buildParentPathContext(Long parentId) {
@@ -2377,32 +2424,333 @@ public class ChatService {
         return Math.max(semanticScore, lexicalScore);
     }
 
-    private boolean classifyRootTopicUnrelated(String question, String rootTopic, List<String> rootContext) {
+    private boolean classifyRootTopicUnrelated(String question, String rootTopic, List<String> rootContext, List<String> parentPathContext) {
         try {
-            String context = rootContext == null ? "" : String.join(" / ", rootContext);
+            String rootContextText = rootContext == null ? "" : String.join(" / ", rootContext);
+            String parentContextText = parentPathContext == null ? "" : String.join(" / ", parentPathContext);
             String prompt = """
-                    Decide whether the user question belongs to the same broad root topic.
-                    Return exactly one candidate from this list: RELATED, UNRELATED.
+                    Root topic label:
+                    %s
 
-                    Root topic: %s
-                    Root context: %s
-                    User question: %s
+                    Root conversation context:
+                    %s
 
-                    RELATED means the question can reasonably fit inside the root topic.
-                    UNRELATED means it should start a different chat room.
-                    Candidates:
-                    - RELATED
-                    - UNRELATED
+                    Current selected path context:
+                    %s
+
+                    New user question:
+                    %s
+
+                    Decision rule:
+                    - Return RELATED only if the new question can naturally belong under the root topic.
+                    - Return UNRELATED if it would require changing the broad subject of the conversation.
+                    - A current selected path cannot expand the root topic into a new broad domain.
+                    - Do not force-fit concrete objects or unrelated everyday concepts into the root topic.
+                    - Treat a concrete object as RELATED only when the selected path or root topic explicitly studies that object, its materials, or its use.
+                    Calibration examples:
+                    - Root "컴퓨터공학" + question "데이터베이스" => RELATED.
+                    - Root "컴퓨터공학" + question "운영체제" => RELATED.
+                    - Root "종교" + question "힌두교" => RELATED.
+                    - Root "종교" + question "컴퓨터공학" => UNRELATED.
+                    - Root "컴퓨터공학" + question "종교" => UNRELATED.
+                    - Root "컴퓨터공학" + question "나무판자" => UNRELATED.
+                    - Root "종교" + question "선풍기" => UNRELATED.
+                    Return exactly one token: RELATED or UNRELATED.
                     """.formatted(
                     trimToLength(defaultString(rootTopic), 80),
-                    trimToLength(defaultString(context), 600),
+                    trimToLength(defaultString(rootContextText), 700),
+                    trimToLength(defaultString(parentContextText), 500),
                     trimToLength(defaultString(question), 240)
             );
-            String result = defaultString(conversationTreeAiService.selectBestSubtopic(prompt));
-            return "UNRELATED".equalsIgnoreCase(result);
+            String result = defaultString(conversationTreeAiService.classifyRootTopicRelation(prompt))
+                    .replace("`", "")
+                    .replace("\"", "")
+                    .trim()
+                    .toUpperCase(Locale.ROOT);
+            return result.startsWith("UNRELATED") || result.contains("UNRELATED");
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean classifyDirectRootTopicUnrelated(String question, String rootTopic) {
+        Boolean related = classifyDirectRootTopicRelated(question, rootTopic);
+        return Boolean.FALSE.equals(related);
+    }
+
+    private Boolean classifyDirectRootTopicRelated(String question, String rootTopic) {
+        String normalizedRootTopic = normalizeForRootTopicCheck(rootTopic);
+        String normalizedQuestion = normalizeForRootTopicCheck(question);
+        if (normalizedRootTopic.isBlank() || normalizedQuestion.isBlank()) {
+            return null;
+        }
+        if (sameNormalizedTopicLabel(normalizedRootTopic, normalizedQuestion)
+                || tokenOverlapRatio(normalizedRootTopic, normalizedQuestion) >= 0.50) {
+            return true;
+        }
+
+        try {
+            String prompt = """
+                    Root topic:
+                    %s
+
+                    New user question:
+                    %s
+
+                    Decide only whether the new question is contained inside the root topic.
+                    Return RELATED only if the question is a normal direct or indirect subtopic, example, tool, application, method, or concept studied inside the root topic.
+                    Return UNRELATED if the question changes to another standalone field, discipline, object, belief system, product, material, person, place, or activity.
+                    Different academic disciplines are UNRELATED unless one is normally recognized as a subfield of the other.
+                    A broad educational or interdisciplinary connection is not enough for RELATED.
+                    Ignore the current selected branch and previous assistant answer.
+                    Calibration examples:
+                    - Root "컴퓨터공학" + question "데이터베이스" => RELATED.
+                    - Root "컴퓨터공학" + question "알고리즘" => RELATED.
+                    - Root "종교" + question "힌두교" => RELATED.
+                    - Root "종교" + question "불교" => RELATED.
+                    - Root "종교" + question "컴퓨터공학" => UNRELATED.
+                    - Root "컴퓨터공학" + question "종교" => UNRELATED.
+                    - Root "컴퓨터공학" + question "나무판자" => UNRELATED.
+                    - Root "컴퓨터공학" + question "선풍기" => UNRELATED.
+                    Return exactly one token: RELATED or UNRELATED.
+                    """.formatted(
+                    trimToLength(defaultString(rootTopic), 120),
+                    trimToLength(defaultString(question), 240)
+            );
+            String result = defaultString(conversationTreeAiService.classifyStrictRootTopicContainment(prompt))
+                    .replace("`", "")
+                    .replace("\"", "")
+                    .trim()
+                    .toUpperCase(Locale.ROOT);
+            if (result.startsWith("RELATED") || result.equals("RELATED")) {
+                return true;
+            }
+            if (result.startsWith("UNRELATED") || result.contains("UNRELATED")) {
+                return false;
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean classifyRootTopicUnrelatedByMajorLabels(String question, String rootTopic, List<String> rootContext, boolean directUnrelated) {
+        try {
+            String rootMajor = extractMajorTopicLabel(rootTopic);
+            String questionMajor = extractMajorTopicLabel(question);
+            if (rootMajor.isBlank() || questionMajor.isBlank()) {
+                return false;
+            }
+            double labelOverlap = tokenOverlapRatio(rootMajor, questionMajor);
+            if (labelOverlap >= 0.50) {
+                return false;
+            }
+            if (directUnrelated) {
+                return true;
+            }
+            String prompt = """
+                    Root broad topic label:
+                    %s
+
+                    New question broad topic label:
+                    %s
+
+                    New user question:
+                    %s
+
+                    Return RELATED only if the question label is normally contained inside the root label as a subfield, subtopic, method, example, or application.
+                    Return UNRELATED if these labels are different standalone broad domains or adjacent disciplines.
+                    A broad educational, cultural, scientific, or interdisciplinary connection is not enough for RELATED.
+                    If unsure, return UNRELATED so the user can choose whether to continue in this tree.
+                    Calibration examples:
+                    - "컴퓨터공학" contains "데이터베이스", "운영체제", "알고리즘".
+                    - "종교" contains "힌두교", "불교", "기독교", "이슬람".
+                    - "종교" does not contain "컴퓨터공학".
+                    - "컴퓨터공학" does not contain "종교", "나무판자", or "선풍기".
+                    Return exactly one token: RELATED or UNRELATED.
+                    """.formatted(
+                    trimToLength(rootMajor, 80),
+                    trimToLength(questionMajor, 80),
+                    trimToLength(defaultString(question), 240)
+            );
+            String result = defaultString(conversationTreeAiService.classifyStrictRootTopicContainment(prompt))
+                    .replace("`", "")
+                    .replace("\"", "")
+                    .trim()
+                    .toUpperCase(Locale.ROOT);
+            return result.startsWith("UNRELATED") || result.contains("UNRELATED");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isDifferentRootMajorTopic(String question, String rootTopic, List<String> rootContext) {
+        try {
+            String rootMajor = extractMajorTopicLabel(rootTopic);
+            String questionMajor = extractMajorTopicLabel(question);
+            if (rootMajor.isBlank() || questionMajor.isBlank()) {
+                return false;
+            }
+            double labelOverlap = tokenOverlapRatio(rootMajor, questionMajor);
+            if (labelOverlap >= 0.50) {
+                return false;
+            }
+            return !sameNormalizedTopicLabel(rootMajor, questionMajor);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isNumericallyDistantMajorTopic(
+            String question,
+            String rootTopic,
+            double displaySimilarity,
+            double parentPathLexical
+    ) {
+        try {
+            String rootMajor = extractMajorTopicLabel(rootTopic);
+            String questionMajor = extractMajorTopicLabel(question);
+            if (rootMajor.isBlank() || questionMajor.isBlank()) {
+                return false;
+            }
+            if (sameNormalizedTopicLabel(rootMajor, questionMajor)) {
+                return false;
+            }
+
+            double labelOverlap = tokenOverlapRatio(rootMajor, questionMajor);
+            if (labelOverlap >= 0.20) {
+                return false;
+            }
+
+            double majorSimilarity = topicRelationshipScore(questionMajor, List.of(rootMajor));
+            double questionToRootMajorSimilarity = topicRelationshipScore(question, List.of(rootMajor));
+            double strongestSimilarity = Math.max(displaySimilarity, Math.max(majorSimilarity, questionToRootMajorSimilarity));
+
+            return parentPathLexical <= 0.0 && strongestSimilarity < 0.22;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isHardMajorBoundaryUnrelated(String question, String rootTopic) {
+        try {
+            String rootMajor = extractMajorTopicLabel(rootTopic);
+            String questionMajor = extractMajorTopicLabel(question);
+            if (rootMajor.isBlank() || questionMajor.isBlank()) {
+                return false;
+            }
+            if (sameNormalizedTopicLabel(rootMajor, questionMajor)) {
+                return false;
+            }
+            if (tokenOverlapRatio(rootMajor, questionMajor) >= 0.20) {
+                return false;
+            }
+            return !classifyMajorTopicContainment(questionMajor, rootMajor, question);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean classifyMajorTopicContainment(String questionMajor, String rootMajor, String question) {
+        try {
+            String prompt = """
+                    Decide whether the candidate topic is normally contained inside the root topic.
+
+                    Root topic:
+                    %s
+
+                    Candidate topic:
+                    %s
+
+                    Original user question:
+                    %s
+
+                    Return RELATED if the candidate is a standard subfield, subtopic, method, example, object of study, denomination, implementation area, or normal child concept of the root.
+                    Return UNRELATED if they are separate broad domains, unrelated objects, products, materials, activities, or disciplines.
+
+                    Calibration examples:
+                    - Root "컴퓨터공학" contains "데이터베이스", "운영체제", "알고리즘", "인공지능".
+                    - Root "종교" contains "힌두교", "불교", "기독교", "이슬람".
+                    - Root "종교" does not contain "컴퓨터공학".
+                    - Root "컴퓨터공학" does not contain "종교", "나무판자", or "선풍기".
+
+                    Return exactly one token: RELATED or UNRELATED.
+                    """.formatted(
+                    trimToLength(defaultString(rootMajor), 100),
+                    trimToLength(defaultString(questionMajor), 100),
+                    trimToLength(defaultString(question), 240)
+            );
+            String result = defaultString(conversationTreeAiService.classifyStrictRootTopicContainment(prompt))
+                    .replace("`", "")
+                    .replace("\"", "")
+                    .trim()
+                    .toUpperCase(Locale.ROOT);
+            return result.startsWith("RELATED") || result.equals("RELATED");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean sameNormalizedTopicLabel(String left, String right) {
+        String normalizedLeft = normalizeForRootTopicCheck(left).replaceAll("[^\\p{L}\\p{N}]", "");
+        String normalizedRight = normalizeForRootTopicCheck(right).replaceAll("[^\\p{L}\\p{N}]", "");
+        if (normalizedLeft.isBlank() || normalizedRight.isBlank()) {
+            return false;
+        }
+        return normalizedLeft.contains(normalizedRight) || normalizedRight.contains(normalizedLeft);
+    }
+
+    private String extractMajorTopicLabel(String text) {
+        try {
+            String prompt = """
+                    Extract the broadest stable topic/domain of the following text.
+                    Return JSON only.
+                    Schema: {"majorTopic":"...","minorTopics":[]}
+
+                    Text:
+                    %s
+                    """.formatted(trimToLength(defaultString(text), 500));
+            String raw = defaultString(conversationTreeAiService.extractTopics(prompt));
+            int start = raw.indexOf("{");
+            int end = raw.lastIndexOf("}");
+            if (start < 0 || end < start) {
+                return fallbackMajorTopicLabel(text);
+            }
+            JsonNode root = new ObjectMapper().readTree(raw.substring(start, end + 1));
+            String majorTopic = defaultString(root.path("majorTopic").asText()).trim();
+            return majorTopic.isBlank() ? fallbackMajorTopicLabel(text) : majorTopic;
+        } catch (Exception e) {
+            return fallbackMajorTopicLabel(text);
+        }
+    }
+
+    private String fallbackMajorTopicLabel(String text) {
+        String normalized = stripSystemPrefix(defaultString(text))
+                .replaceAll("[^\\p{L}\\p{N}\\s]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.isBlank()) {
+            return "";
+        }
+
+        Set<String> stopWords = Set.of(
+                "정보", "설명", "개요", "정의", "대해", "관해", "알려줘", "알려주세요",
+                "무엇", "뭐야", "관련", "기본", "주요", "내용", "질문", "학습",
+                "about", "what", "how", "why", "tell", "explain", "please", "info"
+        );
+
+        List<String> tokens = new ArrayList<>();
+        for (String token : normalized.split(" ")) {
+            String cleaned = token.trim();
+            if (cleaned.length() < 2 || stopWords.contains(cleaned)) {
+                continue;
+            }
+            tokens.add(cleaned);
+            if (tokens.size() >= 4) {
+                break;
+            }
+        }
+        return String.join(" ", tokens);
     }
 
     private double tokenOverlapRatio(String left, String right) {
@@ -2422,6 +2770,19 @@ public class ChatService {
     }
 
     private Set<String> extractCheckTokens(String text) {
+        if (text == null || text != null) {
+            String normalizedSafe = defaultString(text).toLowerCase(Locale.ROOT)
+                    .replaceAll("[^\\p{L}\\p{N}\\s]+", " ");
+            Set<String> safeTokens = new LinkedHashSet<>();
+            for (String token : normalizedSafe.split("\\s+")) {
+                String trimmed = token.trim();
+                if (trimmed.length() < 2 || ROOT_TOPIC_CHECK_STOP_WORDS.contains(trimmed)) {
+                    continue;
+                }
+                safeTokens.add(trimmed);
+            }
+            return safeTokens;
+        }
         String normalized = defaultString(text).toLowerCase(Locale.ROOT)
                 .replaceAll("[^0-9a-z가-힣]+", " ");
         Set<String> tokens = new LinkedHashSet<>();

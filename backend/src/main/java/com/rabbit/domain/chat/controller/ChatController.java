@@ -77,7 +77,8 @@ public class ChatController {
                     request.getParentId(),
                     request.getMessage(),
                     request.isForceCreateUnrelated(),
-                    request.isSkipRootTopicGuard()
+                    request.isSkipRootTopicGuard(),
+                    request.getRootTopic()
             );
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {

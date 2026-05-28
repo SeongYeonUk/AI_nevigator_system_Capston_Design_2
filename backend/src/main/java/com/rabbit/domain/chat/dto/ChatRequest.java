@@ -14,5 +14,6 @@ public class ChatRequest {
     private Long activeNodeId;
     private boolean forceCreateUnrelated;
     private boolean skipRootTopicGuard;
+    private String rootTopic;
 }
 

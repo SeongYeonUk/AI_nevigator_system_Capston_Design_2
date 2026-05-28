@@ -40,6 +40,7 @@ let lastGraphNodePointerDown = {
 };
 
 const UI_THEME_STORAGE_KEY = "pathlearn.uiTheme";
+const ROOT_TOPIC_ACCEPTED_STORAGE_KEY = "pathlearn.rootTopicAcceptedNodeKeys";
 const UI_THEME_IDS = new Set(["default", "mist", "sage", "lavender"]);
 const GRAPH_ZOOM_PRESETS = [
   0.4, 1, 1.1, 1.2, 1.3, 1.4
@@ -53,6 +54,7 @@ const state = {
   graphZoom: 1,
   graphScopeMode: "range",
   focusGraphLayout: "mindmap",
+  focusMindmapViewport: null,
   graphNodeShape: "circle",
   graphNodeSizeScale: 1,
   graphTreeScale: 1,
@@ -80,6 +82,8 @@ const state = {
   routeNotice: null,
   branchNotice: null,
   rootTopicNoticeNodeIds: new Set(),
+  acceptedRootTopicNodeKeys: loadAcceptedRootTopicNodeKeys(),
+  rootTopicPreflightResults: new Map(),
   pendingPlacementChecks: new Map(),
   insightCache: new Map(),
   pendingInsightKeys: new Set(),
@@ -1463,6 +1467,7 @@ function applyAssistantResponseToTempNode({
   expandCollapsedAncestorsForNode(persistedId, state.treeNodes);
   transferRouteNoticeNodeId(tempId, persistedId);
   transferBranchNoticeNodeId(tempId, persistedId);
+  transferRootTopicPreflightResult(tempId, persistedId);
   return persistedId;
 }
 
@@ -1503,12 +1508,43 @@ async function onSendMessage(event) {
     const parent = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
     const nextDepth = parent ? parent.depth + 1 : 0;
     let parentId = parent ? parent.id : null;
-    const forceCreateUnrelated = state.forceCreateUnrelatedOnce;
+    let forceCreateUnrelated = state.forceCreateUnrelatedOnce;
     state.forceCreateUnrelatedOnce = false;
     const activeParent = parentId ? getNodeById(parentId) : null;
     const effectiveNextDepth = activeParent ? Number(activeParent.depth || 0) + 1 : 0;
-    const pendingNotice = forceCreateUnrelated ? state.pendingRouteNoticePlan : null;
+    let pendingNotice = forceCreateUnrelated ? state.pendingRouteNoticePlan : null;
+    let localRootTopicMismatch = false;
+    const rootTopicForCheck = getRootTopicLabelForParent(activeParent);
     state.pendingRouteNoticePlan = null;
+
+    if (!forceCreateUnrelated && parentId) {
+      const rootTopicDecision = await resolveRootTopicDecision({
+        roomId: effectiveRoomId,
+        parentId,
+        question
+      });
+      if (rootTopicDecision === "new_room") {
+        await startNewRoomWithQuestion(question);
+        return;
+      }
+      if (rootTopicDecision === "cancel") {
+        if (el.chatInput) {
+          el.chatInput.value = question;
+        }
+        render();
+        setChatSubmitBusy(false);
+        return;
+      }
+      if (rootTopicDecision === "continue_unrelated") {
+        forceCreateUnrelated = true;
+        pendingNotice = state.pendingRouteNoticePlan;
+        state.pendingRouteNoticePlan = null;
+      }
+      if (rootTopicDecision === "check_failed") {
+        localRootTopicMismatch = shouldUseLocalRootTopicMismatchNotice(question, activeParent);
+      }
+    }
+
     tempId = `n_${Date.now().toString(36)}`;
 
     state.nodes.push({
@@ -1530,6 +1566,15 @@ async function onSendMessage(event) {
     } else if (pendingNotice) {
       setRouteNotice({ ...pendingNotice, nodeId: tempId });
       clearBranchNotice();
+    } else if (localRootTopicMismatch) {
+      setRouteNotice({
+        nodeId: tempId,
+        type: "strong",
+        kind: "topic",
+        message: `대주제 '${getRootTopicLabelForParent(activeParent)}'와 관계가 낮아 보입니다. 답변 후 진행 방식을 선택할 수 있습니다.`,
+        createdAt: Date.now()
+      });
+      clearBranchNotice();
     } else {
       clearRouteNotice();
       clearBranchNotice();
@@ -1544,13 +1589,51 @@ async function onSendMessage(event) {
       persistCurrentLocalConversationState();
     }
     render();
+    if (localRootTopicMismatch) {
+      const choice = await openRootTopicDecisionDialog({
+        unrelated: true,
+        rootTopic: getRootTopicLabelForParent(activeParent),
+        similarity: 0
+      });
+      if (choice === "new_room") {
+        state.nodes = state.nodes.filter((node) => node.id !== tempId);
+        state.selectedNodeId = previousSelectedNodeId;
+        state.treeBuildStatus = previousTreeBuildStatus;
+        clearRouteNotice();
+        clearBranchNotice();
+        await startNewRoomWithQuestion(question);
+        return;
+      }
+      if (choice === "cancel") {
+        state.nodes = state.nodes.filter((node) => node.id !== tempId);
+        state.selectedNodeId = previousSelectedNodeId;
+        state.treeBuildStatus = previousTreeBuildStatus;
+        clearRouteNotice();
+        clearBranchNotice();
+        if (el.chatInput) {
+          el.chatInput.value = question;
+        }
+        render();
+        setChatSubmitBusy(false);
+        return;
+      }
+      forceCreateUnrelated = true;
+    }
+    beginRootTopicPreflight({
+      roomId: effectiveRoomId,
+      parentId,
+      question,
+      nodeId: tempId,
+      skip: localRootTopicMismatch || forceCreateUnrelated || !parentId
+    });
 
     const response = await askChatApi({
       roomId: effectiveRoomId,
       message: question,
       parentId,
       forceCreateUnrelated,
-      skipRootTopicGuard: !forceCreateUnrelated,
+      skipRootTopicGuard: forceCreateUnrelated,
+      rootTopic: rootTopicForCheck,
       token: state.currentSession?.accessToken || ""
     });
 
@@ -1566,7 +1649,18 @@ async function onSendMessage(event) {
       nextDepth: effectiveNextDepth
     });
     maybeHandleAssistantOutOfScopeNotice(response, persistedNodeId, question, parentId);
+    handleDeferredRootTopicNotice(response, persistedNodeId);
+    if (localRootTopicMismatch && !forceCreateUnrelated && persistedNodeId && !state.rootTopicNoticeNodeIds.has(String(persistedNodeId))) {
+      handleLocalRootTopicMismatchNotice(persistedNodeId, question, parentId);
+    }
     rememberPlacementCheck(persistedNodeId, parentId, question);
+    schedulePostAnswerRootTopicCheck({
+      roomId: effectiveRoomId,
+      parentId,
+      question,
+      nodeId: persistedNodeId,
+      skip: forceCreateUnrelated || !parentId
+    });
     if (isCurrentRoomLocal()) {
       state.treeNodes = state.nodes.map(cloneNode);
       if (persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
@@ -1626,20 +1720,7 @@ async function onSendMessage(event) {
       if (choice === "new_room") {
         clearRouteNotice();
         clearBranchNotice();
-        const newRoomId = await createRoomApi(summarizeRoomTitle(question), state.currentSession?.accessToken || "");
-        clearPendingTreeMutations();
-        state.treeProcessingWatcherToken++;
-        state.currentRoomId = Number(newRoomId);
-        state.nodes = [];
-        state.treeNodes = [];
-        state.selectedNodeId = null;
-        await refreshRoomsOnly();
-        if (el.chatInput) {
-          el.chatInput.value = question;
-        }
-        render();
-        setChatSubmitBusy(false);
-        el.chatForm?.requestSubmit();
+        await startNewRoomWithQuestion(question);
         return;
       }
       render();
@@ -2169,6 +2250,10 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
 
   const container = document.createElement("div");
   container.className = `cyto-tree-canvas mindmap-layout ${isCircleFocus ? "circle-layout" : "box-layout"}`;
+  container.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  }, { passive: false });
   el.treeRoot.appendChild(container);
 
   const elements = [
@@ -2229,9 +2314,12 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
   focusCytoscape = window.cytoscape({
     container,
     elements,
-    wheelSensitivity: 0.18,
-    minZoom: 0.18,
-    maxZoom: 2.6,
+    userZoomingEnabled: true,
+    userPanningEnabled: true,
+    boxSelectionEnabled: false,
+    wheelSensitivity: 0.28,
+    minZoom: 0.12,
+    maxZoom: 4.2,
     style: [
   {
     selector: "node",
@@ -2241,23 +2329,23 @@ style: {
   "background-color": "data(fill)",
   "border-color": "data(stroke)",
   "border-width": isCircleFocus ? 2.4 : 2,
-  color: text,
-  "font-size": isCircleFocus ? 11 : 15, // 원형일 때 글씨를 11로 콤팩트하게 조절
-  "font-weight": 800,
+  color: "#111827",
+  "font-size": isCircleFocus ? 13 : 16,
+  "font-weight": 900,
+  "text-outline-color": "rgba(255,255,255,0.72)",
+  "text-outline-width": 1.2,
   
-  // 💡 [핵심 교정] 여기를 주목해줘!
   "text-wrap": "wrap",
-  "text-max-width": isCircleFocus ? 52 : 185, //폭을 52px로 확 조여서 글자가 알아서 아랫줄로 넘어가게 만듦
+  "text-max-width": isCircleFocus ? 68 : 210,
   
   "text-valign": "center",
   "text-halign": "center",
   
-  // 💡 원형 크기를 88로 살짝 키워서 두 줄이 들어갈 공간(상하 여백)을 확보해줌
-  width: isCircleFocus ? 88 : "label",
-  height: isCircleFocus ? 88 : "label",
-  padding: isCircleFocus ? "4px" : "15px",
-  "min-width": isCircleFocus ? 88 : 132,
-  "min-height": isCircleFocus ? 88 : 38,
+  width: isCircleFocus ? 96 : "label",
+  height: isCircleFocus ? 96 : "label",
+  padding: isCircleFocus ? "6px" : "17px",
+  "min-width": isCircleFocus ? 96 : 146,
+  "min-height": isCircleFocus ? 96 : 44,
   
   "shadow-blur": 10,
   "shadow-color": "data(stroke)",
@@ -2274,6 +2362,7 @@ style: {
       "background-color": selectedFill,
       "border-color": accent,
       "border-width": 4,
+      color: "#111827",
       "shadow-blur": isCircleFocus ? 24 : 18,
       "shadow-color": accent,
       "shadow-opacity": 0.35,
@@ -2358,19 +2447,31 @@ style: {
   {
     selector: "node[depth = 0], node.root",
     style: {
-      "font-size": isCircleFocus ? 14 : 16,
-      "background-color": "#7c58e8",
+      "font-size": isCircleFocus ? 15 : 17,
+      "background-color": "#f1eaff",
       "border-color": "#6542cd",
-      color: "#ffffff",
+      color: "#111827",
       "border-width": 3,
-      // 💡 [교정 4] 루트 노드가 원형일 때 글자가 튀어나가지 않도록 내측 마진(text-max-width) 강제 주입
-      "text-max-width": isCircleFocus ? 80 : 185,
-      ...(isCircleFocus ? { width: 108, height: 108 } : { "min-width": 182, "min-height": 50 })
+      "text-outline-color": "rgba(255,255,255,0.82)",
+      "text-outline-width": 1.4,
+      "text-max-width": isCircleFocus ? 86 : 210,
+      ...(isCircleFocus ? { width: 114, height: 114 } : { "min-width": 196, "min-height": 54 })
     }
   }
 ],
 layout: getFocusCytoscapeLayout(mindmap.positions)
 });
+
+  let applyingFocusViewport = false;
+  focusCytoscape.on("zoom pan", () => {
+    if (applyingFocusViewport) {
+      return;
+    }
+    state.focusMindmapViewport = {
+      zoom: focusCytoscape.zoom(),
+      pan: focusCytoscape.pan()
+    };
+  });
 
   focusCytoscape.on("tap", "node", (event) => {
     const nodeId = event.target.id();
@@ -2418,18 +2519,19 @@ layout: getFocusCytoscapeLayout(mindmap.positions)
   });
 
   requestAnimationFrame(() => {
-    focusCytoscape.fit(undefined, 96);
-    focusCytoscape.center();
-    if (state.graphTreeScale !== 1) {
-      const center = {
-        x: container.clientWidth / 2,
-        y: container.clientHeight / 2
-      };
-      focusCytoscape.zoom({
-        level: clamp(focusCytoscape.zoom() * state.graphTreeScale, focusCytoscape.minZoom(), focusCytoscape.maxZoom()),
-        renderedPosition: center
+    applyingFocusViewport = true;
+    const viewport = state.focusMindmapViewport;
+    if (viewport?.zoom && viewport?.pan) {
+      focusCytoscape.zoom(clamp(Number(viewport.zoom) || 1, focusCytoscape.minZoom(), focusCytoscape.maxZoom()));
+      focusCytoscape.pan({
+        x: Number(viewport.pan.x) || 0,
+        y: Number(viewport.pan.y) || 0
       });
+    } else {
+      focusCytoscape.fit(undefined, 96);
+      focusCytoscape.center();
     }
+    applyingFocusViewport = false;
   });
 }
 
@@ -4008,11 +4110,18 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
     depth: nextDepth,
     timestamp: Date.now()
   });
-  if (isNewBranch || depthLead >= 3) {
+  const tempNode = getNodeById(tempId);
+  const immediateFocusNotice = buildRouteFocusNotice(tempNode);
+  if (immediateFocusNotice) {
     setRouteNotice({
+      ...immediateFocusNotice,
       nodeId: tempId,
-      type: "info",
-      kind: depthLead >= 3 ? "depth" : "branch",
+      createdAt: Date.now()
+    });
+    clearBranchNotice();
+  } else if (isNewBranch) {
+    setBranchNotice({
+      nodeId: tempId,
       message: buildDeepBranchNoticeMessage({ depth: nextDepth, isNewBranch, depthLead }),
       createdAt: Date.now()
     });
@@ -4041,12 +4150,14 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
       parentId,
       nextDepth
     });
+    rememberPlacementCheck(persistedNodeId, parentId, question);
 
     if (isCurrentRoomLocal()) {
       state.treeNodes = state.nodes.map(cloneNode);
       if (persistedNodeId && state.nodes.some((node) => node.id === persistedNodeId)) {
         state.selectedNodeId = persistedNodeId;
       }
+      detectPlacementChangeNotice(persistedNodeId);
       persistCurrentLocalConversationState();
       render();
       return persistedNodeId;
@@ -4057,6 +4168,7 @@ async function createChildNodeFromRecommendation(parentNode, subtopic) {
       state.selectedNodeId = persistedNodeId;
       expandCollapsedAncestorsForNode(persistedNodeId, state.nodes);
       expandCollapsedAncestorsForNode(persistedNodeId, state.treeNodes);
+      detectPlacementChangeNotice(persistedNodeId);
     }
     render();
     return persistedNodeId;
@@ -4112,6 +4224,7 @@ function detectPlacementChangeNotice(nodeId) {
   }
 
   const actualParentId = node.parentId != null ? String(node.parentId) : null;
+  scheduleRootTopicCheckForPlacement(check, node, actualParentId);
   if (actualParentId !== check.requestedParentId) {
     const actualParent = actualParentId ? getNodeById(actualParentId) : null;
     clearDepthRouteNoticeForNode(key);
@@ -4120,7 +4233,28 @@ function detectPlacementChangeNotice(nodeId) {
       message: `질문이 '${actualParent?.title || "다른 경로"}' 분기로 이동했습니다.`,
       createdAt: Date.now()
     });
-    scheduleRootTopicCheckForPlacement(check, node, actualParentId);
+    state.pendingPlacementChecks.delete(key);
+    return;
+  }
+
+  const focusMetrics = getRouteFocusMetrics(node);
+  if (focusMetrics.shouldNotify) {
+    setRouteNotice({
+      nodeId: key,
+      type: "info",
+      kind: focusMetrics.isDeepening ? "deepening" : "leaf-bias",
+      message: buildFocusDepthStatusMessage(focusMetrics),
+      createdAt: Date.now()
+    });
+    if (actualParentId && countVisibleChildren(actualParentId) >= 2) {
+      setBranchNotice({
+        nodeId: key,
+        message: "새 분기가 생성되었습니다. 같은 부모 아래 별도 흐름으로 나뉘었습니다.",
+        createdAt: Date.now()
+      });
+    } else {
+      clearBranchNotice();
+    }
     state.pendingPlacementChecks.delete(key);
     return;
   }
@@ -4136,27 +4270,13 @@ function detectPlacementChangeNotice(nodeId) {
     return;
   }
 
-  const focusMetrics = getRouteFocusMetrics(node);
-  if (focusMetrics.shouldNotify) {
-    clearBranchNotice();
-    setRouteNotice({
-      nodeId: key,
-      type: "info",
-      kind: "depth",
-      message: buildFocusDepthStatusMessage(focusMetrics),
-      createdAt: Date.now()
-    });
-    state.pendingPlacementChecks.delete(key);
-    return;
-  }
-
   if (Date.now() - Number(check.createdAt || 0) > 60000) {
     state.pendingPlacementChecks.delete(key);
   }
 }
 
 function scheduleRootTopicCheckForPlacement(check, node, actualParentId) {
-  if (!check || !node || isCurrentRoomLocal()) {
+  if (!check || !node) {
     return;
   }
   if (state.rootTopicNoticeNodeIds.has(String(node.id))) {
@@ -4176,7 +4296,7 @@ function scheduleRootTopicCheckForPlacement(check, node, actualParentId) {
 
 function clearDepthRouteNoticeForNode(nodeId) {
   if (
-    state.routeNotice?.kind === "depth" &&
+    isDepthRouteNoticeKind(state.routeNotice?.kind) &&
     String(state.routeNotice.nodeId) === String(nodeId)
   ) {
     clearRouteNotice();
@@ -4219,6 +4339,52 @@ function transferBranchNoticeNodeId(fromNodeId, toNodeId) {
       nodeId: String(toNodeId)
     };
   }
+}
+
+function loadAcceptedRootTopicNodeKeys() {
+  try {
+    const raw = localStorage.getItem(ROOT_TOPIC_ACCEPTED_STORAGE_KEY);
+    const parsed = JSON.parse(raw || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function saveAcceptedRootTopicNodeKeys(keys) {
+  try {
+    localStorage.setItem(ROOT_TOPIC_ACCEPTED_STORAGE_KEY, JSON.stringify([...keys].map(String)));
+  } catch (error) {
+    console.warn("Failed to persist accepted root topic notices:", error);
+  }
+}
+
+function buildRootTopicAcceptedNodeKey(nodeId) {
+  return `${String(state.currentRoomId || "")}:${String(nodeId || "")}`;
+}
+
+function hasAcceptedRootTopicNotice(nodeId) {
+  return state.acceptedRootTopicNodeKeys.has(buildRootTopicAcceptedNodeKey(nodeId));
+}
+
+function rememberAcceptedRootTopicNotice(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  state.acceptedRootTopicNodeKeys.add(buildRootTopicAcceptedNodeKey(nodeId));
+  saveAcceptedRootTopicNodeKeys(state.acceptedRootTopicNodeKeys);
+}
+
+function transferRootTopicPreflightResult(fromNodeId, toNodeId) {
+  if (!fromNodeId || !toNodeId || String(fromNodeId) === String(toNodeId)) {
+    return;
+  }
+  const result = state.rootTopicPreflightResults.get(String(fromNodeId));
+  if (!result) {
+    return;
+  }
+  state.rootTopicPreflightResults.delete(String(fromNodeId));
+  state.rootTopicPreflightResults.set(String(toNodeId), result);
 }
 
 function getActiveBranchNotice(node) {
@@ -4275,20 +4441,9 @@ function maybeHandleAssistantOutOfScopeNotice(response, nodeId, question, origin
     try {
       const currentNode = getNodeById(key);
       const nextQuestion = currentNode?.userQuestion || question || "";
-      clearRouteNotice();
-      clearBranchNotice();
-      const newRoomId = await createRoomApi(summarizeRoomTitle(nextQuestion), state.currentSession?.accessToken || "");
-      clearPendingTreeMutations();
-      state.treeProcessingWatcherToken++;
-      state.currentRoomId = Number(newRoomId);
-      state.nodes = [];
-      state.treeNodes = [];
-      state.selectedNodeId = null;
-      await refreshRoomsOnly();
-      if (el.chatInput) {
-        el.chatInput.value = nextQuestion;
-      }
-      render();
+      const localRoom = getLocalConversationRoom();
+      const sourceRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+      await startNewRoomWithQuestion(nextQuestion, { removeNodeId: key, sourceRoomId });
     } catch (error) {
       setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
       render();
@@ -4302,13 +4457,129 @@ function isAssistantOutOfScopeAnswer(answer) {
   if (!text) {
     return false;
   }
-  return /관련(?:이|은)?\s*(?:없는|없습니다|없으며|없고)|학습\s*목표(?:에서|를)?\s*벗어난|학습\s*목표와\s*관련|직접(?:적)?으로\s*관련(?:이)?\s*없|범위(?:를)?\s*벗어난|주제(?:가)?\s*아닙니다/.test(text);
+  return /이탈\s*방지|대주제(?:와|에서)?\s*(?:다른|벗어난|이탈)|관련(?:이|은)?\s*(?:없는|없습니다|없으며|없고)|학습\s*목표(?:에서|를)?\s*벗어난|학습\s*목표(?:와는|와)?\s*(?:조금\s*)?다른\s*주제|원래(?:의)?\s*학습\s*목표.*다른\s*주제|학습\s*목표와\s*관련|직접(?:적)?으로\s*관련(?:이)?\s*없|범위(?:를)?\s*벗어난|주제(?:가)?\s*아닙니다/.test(text);
 }
 
 function getRootTopicLabelForNode(nodeId) {
   const path = getPathToNode(nodeId);
   const root = path.find((node) => !node.parentId) || path[0] || state.nodes.find((node) => !node.parentId);
   return root?.title || "현재 대화";
+}
+
+function getRootTopicLabelForParent(parent) {
+  const root = getRootNodeForNode(parent) || state.nodes.find((node) => !node.parentId);
+  return root?.title || "현재 대화";
+}
+
+function shouldUseLocalRootTopicMismatchNotice(question, parent) {
+  // 특정 주제명을 하드코딩하지 않고, 현재 루트/경로 텍스트와의 일반 토큰 관계만 보조 확인한다.
+  // 최종 판단은 백엔드 root-topic-check가 우선이고, 이 함수는 명백한 무관 질문을 놓치지 않기 위한 안전장치다.
+  return isQuestionOutsideRootTopic(question, parent);
+}
+
+function countDirectRootTopicChildren(root) {
+  if (!root) {
+    return 0;
+  }
+  return state.nodes.filter((node) => (
+    String(node.parentId || "") === String(root.id) &&
+    !isAutoSubtopicSeedNode(node)
+  )).length;
+}
+
+function collectRootContextTokens(root, pathIds = new Set()) {
+  const tokens = new Set();
+  const addText = (text) => {
+    extractMeaningfulTokens(text).forEach((token) => tokens.add(token));
+  };
+
+  addText(root?.title);
+  addText(root?.userQuestion);
+  addText(getCurrentRoomTitle());
+
+  state.nodes.forEach((node) => {
+    if (!node || isAutoSubtopicSeedNode(node)) {
+      return;
+    }
+    if (String(node.id) === String(root?.id)) {
+      return;
+    }
+    if (!isDescendantNodeOf(node, root)) {
+      return;
+    }
+    const depth = Number(node.depth || 0);
+    if (pathIds.has(String(node.id)) && depth > 1) {
+      return;
+    }
+    if (depth > 2) {
+      return;
+    }
+    addText(node.title);
+    addText(node.userQuestion);
+  });
+
+  return tokens;
+}
+
+function isDescendantNodeOf(node, ancestor) {
+  if (!node || !ancestor) {
+    return false;
+  }
+  let cursor = node;
+  const guard = new Set();
+  while (cursor?.parentId != null && !guard.has(String(cursor.id))) {
+    guard.add(String(cursor.id));
+    if (String(cursor.parentId) === String(ancestor.id)) {
+      return true;
+    }
+    cursor = getNodeById(cursor.parentId);
+  }
+  return false;
+}
+
+function handleLocalRootTopicMismatchNotice(nodeId, question, originalParentId) {
+  const key = String(nodeId);
+  const node = getNodeById(key);
+  if (!node) {
+    return;
+  }
+  state.rootTopicNoticeNodeIds.add(key);
+  const rootTopic = getRootTopicLabelForNode(key);
+  setRouteNotice({
+    nodeId: key,
+    type: "strong",
+    kind: "topic",
+    message: `대주제 '${rootTopic}'와 관계가 낮은 노드가 생성되었습니다.`,
+    createdAt: Date.now()
+  });
+  clearBranchNotice();
+  renderInsights();
+  void openRootTopicDecisionDialog({
+    unrelated: true,
+    rootTopic,
+    similarity: 0
+  }).then(async (choice) => {
+    if (choice === "continue") {
+      await forceKeepNodeUnderOriginalParent({
+        nodeId: key,
+        parentId: originalParentId,
+        question
+      });
+      return;
+    }
+    if (choice !== "new_room") {
+      return;
+    }
+    try {
+      const nextQuestion = node.userQuestion || question || "";
+      const localRoom = getLocalConversationRoom();
+      const sourceRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+      await startNewRoomWithQuestion(nextQuestion, { removeNodeId: key, sourceRoomId });
+    } catch (error) {
+      setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+      render();
+    }
+  });
 }
 
 async function forceKeepNodeUnderOriginalParent({ nodeId, parentId, question }) {
@@ -4365,17 +4636,87 @@ async function forceKeepNodeUnderOriginalParent({ nodeId, parentId, question }) 
   }
 }
 
-function schedulePostAnswerRootTopicCheck({ roomId, parentId, question, nodeId, skip = false }) {
-  if (skip || !roomId || !parentId || !question || !nodeId || isCurrentRoomLocal()) {
-    return;
-  }
-  if (state.rootTopicNoticeNodeIds.has(String(nodeId))) {
+function beginRootTopicPreflight({ roomId, parentId, question, nodeId, skip = false }) {
+  if (skip || !roomId || !parentId || !question || !nodeId) {
     return;
   }
   void checkRootTopicApi({
     roomId,
     parentId,
     message: question,
+    rootTopic: getRootTopicLabelForNode(parentId),
+    token: state.currentSession?.accessToken || ""
+  }).then((result) => {
+    const targetNode = getNodeById(nodeId) || [...state.nodes].reverse().find((node) => node.userQuestion === question);
+    if (!result?.unrelated || !targetNode) {
+      return;
+    }
+    const rootTopic = result.rootTopic || "현재 대화";
+    state.rootTopicPreflightResults.set(String(targetNode.id), {
+      unrelated: true,
+      rootTopic,
+      similarity: Number(result.similarity) || 0,
+      createdAt: Date.now()
+    });
+    setRouteNotice({
+      nodeId: targetNode.id,
+      type: "strong",
+      kind: "topic",
+      message: `대주제 '${rootTopic}'와 관계가 낮아 보입니다. 답변 후 진행 방식을 선택할 수 있습니다.`,
+      createdAt: Date.now()
+    });
+    clearBranchNotice();
+    renderInsights();
+  }).catch((error) => {
+    console.warn("Pre-answer root topic check failed:", error);
+  });
+}
+
+function schedulePostAnswerRootTopicCheck({ roomId, parentId, question, nodeId, skip = false }) {
+  if (skip || !roomId || !parentId || !question || !nodeId) {
+    return;
+  }
+  if (state.rootTopicNoticeNodeIds.has(String(nodeId))) {
+    return;
+  }
+  const preflightResult = state.rootTopicPreflightResults.get(String(nodeId));
+  if (preflightResult?.unrelated && getNodeById(nodeId)) {
+    state.rootTopicPreflightResults.delete(String(nodeId));
+    state.rootTopicNoticeNodeIds.add(String(nodeId));
+    const rootTopic = preflightResult.rootTopic || "현재 대화";
+    setRouteNotice({
+      nodeId,
+      type: "strong",
+      kind: "topic",
+      message: `대주제 '${rootTopic}'와 관계가 낮은 노드가 생성되었습니다.`,
+      createdAt: Date.now()
+    });
+    clearBranchNotice();
+    renderInsights();
+    void openRootTopicDecisionDialog({
+      unrelated: true,
+      rootTopic,
+      similarity: Number(preflightResult.similarity) || 0
+    }).then(async (choice) => {
+      if (choice !== "new_room") {
+        return;
+      }
+      try {
+        const currentNode = getNodeById(nodeId);
+        const nextQuestion = currentNode?.userQuestion || question;
+        await startNewRoomWithQuestion(nextQuestion, { removeNodeId: nodeId, sourceRoomId: roomId });
+      } catch (error) {
+        setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+        render();
+      }
+    });
+    return;
+  }
+  void checkRootTopicApi({
+    roomId,
+    parentId,
+    message: question,
+    rootTopic: getRootTopicLabelForNode(parentId),
     token: state.currentSession?.accessToken || ""
   }).then((result) => {
     if (!result?.unrelated || !getNodeById(nodeId)) {
@@ -4402,20 +4743,7 @@ function schedulePostAnswerRootTopicCheck({ roomId, parentId, question, nodeId, 
       try {
         const currentNode = getNodeById(nodeId);
         const nextQuestion = currentNode?.userQuestion || question;
-        clearRouteNotice();
-        clearBranchNotice();
-        const newRoomId = await createRoomApi(summarizeRoomTitle(nextQuestion), state.currentSession?.accessToken || "");
-        clearPendingTreeMutations();
-        state.treeProcessingWatcherToken++;
-        state.currentRoomId = Number(newRoomId);
-        state.nodes = [];
-        state.treeNodes = [];
-        state.selectedNodeId = null;
-        await refreshRoomsOnly();
-        if (el.chatInput) {
-          el.chatInput.value = nextQuestion;
-        }
-        render();
+        await startNewRoomWithQuestion(nextQuestion, { removeNodeId: nodeId, sourceRoomId: roomId });
       } catch (error) {
         setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
         render();
@@ -4450,20 +4778,9 @@ function handleDeferredRootTopicNotice(response, nodeId) {
     try {
       const currentNode = getNodeById(nodeId);
       const question = currentNode?.userQuestion || "";
-      clearRouteNotice();
-      clearBranchNotice();
-      const newRoomId = await createRoomApi(summarizeRoomTitle(question), state.currentSession?.accessToken || "");
-      clearPendingTreeMutations();
-      state.treeProcessingWatcherToken++;
-      state.currentRoomId = Number(newRoomId);
-      state.nodes = [];
-      state.treeNodes = [];
-      state.selectedNodeId = null;
-      await refreshRoomsOnly();
-      if (el.chatInput) {
-        el.chatInput.value = question;
-      }
-      render();
+      const localRoom = getLocalConversationRoom();
+      const sourceRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+      await startNewRoomWithQuestion(question, { removeNodeId: nodeId, sourceRoomId });
     } catch (error) {
       setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
       render();
@@ -4471,8 +4788,42 @@ function handleDeferredRootTopicNotice(response, nodeId) {
   });
 }
 
+async function startNewRoomWithQuestion(question, { removeNodeId = null, sourceRoomId = null } = {}) {
+  const nextQuestion = String(question || "").trim();
+  if (!nextQuestion) {
+    return;
+  }
+  const token = state.currentSession?.accessToken || "";
+  if (removeNodeId && sourceRoomId) {
+    try {
+      await deleteNodeApi(sourceRoomId, removeNodeId, token);
+    } catch (error) {
+      console.warn("Failed to remove unrelated node before starting new room:", error);
+    }
+  }
+
+  clearRouteNotice();
+  clearBranchNotice();
+  const newRoomId = await createRoomApi(summarizeRoomTitle(nextQuestion), token);
+  clearPendingTreeMutations();
+  state.treeProcessingWatcherToken++;
+  state.currentRoomId = Number(newRoomId);
+  state.nodes = [];
+  state.treeNodes = [];
+  state.selectedNodeId = null;
+  state.suppressRootTopicCheckOnce = false;
+  state.forceCreateUnrelatedOnce = false;
+  await refreshRoomsOnly();
+  if (el.chatInput) {
+    el.chatInput.value = nextQuestion;
+  }
+  render();
+  setChatSubmitBusy(false);
+  setTimeout(() => el.chatForm?.requestSubmit(), 0);
+}
+
 async function resolveRootTopicDecision({ roomId, parentId, question }) {
-  if (!roomId || !parentId || isCurrentRoomLocal() || state.suppressRootTopicCheckOnce) {
+  if (!roomId || !parentId || state.suppressRootTopicCheckOnce) {
     state.suppressRootTopicCheckOnce = false;
     return "continue";
   }
@@ -4482,6 +4833,7 @@ async function resolveRootTopicDecision({ roomId, parentId, question }) {
       roomId,
       parentId,
       message: question,
+      rootTopic: getRootTopicLabelForNode(parentId),
       token: state.currentSession?.accessToken || ""
     });
     if (!result?.unrelated) {
@@ -4507,7 +4859,7 @@ async function resolveRootTopicDecision({ roomId, parentId, question }) {
       return choice === "continue" ? "continue_unrelated" : choice;
   } catch (error) {
     console.warn("Root topic check failed:", error);
-    return "continue";
+    return "check_failed";
   }
 }
 
@@ -4572,10 +4924,17 @@ function setRouteNotice(notice) {
   state.routeNotice = {
     nodeId: String(notice.nodeId),
     type: notice.type === "strong" ? "strong" : "info",
-    kind: notice.kind === "depth" ? "depth" : (notice.kind === "branch" ? "branch" : "topic"),
+    kind: normalizeRouteNoticeKind(notice.kind),
     message: String(notice.message),
     createdAt: Number(notice.createdAt) || Date.now()
   };
+}
+
+function normalizeRouteNoticeKind(kind) {
+  if (["depth", "deepening", "leaf-bias", "depth-mixed", "topic"].includes(kind)) {
+    return kind;
+  }
+  return "topic";
 }
 
 function clearRouteNotice() {
@@ -4603,10 +4962,14 @@ function getActiveRouteNotice(node) {
   if (!isSameNode || !isFresh) {
     return null;
   }
-  if (state.routeNotice.kind === "depth" && !isDepthNoticeStillValidForNode(node)) {
+  if (isDepthRouteNoticeKind(state.routeNotice.kind) && !isDepthNoticeStillValidForNode(node)) {
     return null;
   }
   return state.routeNotice;
+}
+
+function isDepthRouteNoticeKind(kind) {
+  return kind === "depth" || kind === "deepening" || kind === "leaf-bias" || kind === "depth-mixed";
 }
 
 function isDepthNoticeStillValidForNode(node) {
@@ -4628,12 +4991,24 @@ function getDepthLeadForExistingNode(node) {
     return 0;
   }
   const selectedDepth = Number(node.depth || 0);
-  const pathIds = new Set(getPathToNode(node.id).map((pathNode) => String(pathNode.id)));
+  const pathIds = new Set(getPathForRouteMetrics(node).map((pathNode) => String(pathNode.id)));
   const deepestOutsideLeafDepth = getDeepestLeafDepthOutsidePath(pathIds);
   if (deepestOutsideLeafDepth == null) {
     return 0;
   }
   return Math.max(0, selectedDepth - deepestOutsideLeafDepth);
+}
+
+function getPathForRouteMetrics(node) {
+  if (!node) {
+    return [];
+  }
+  const existingPath = getPathToNode(node.id);
+  if (existingPath.length) {
+    return existingPath;
+  }
+  const parentPath = node.parentId ? getPathToNode(node.parentId) : [];
+  return [...parentPath, node];
 }
 
 function getRouteFocusMetrics(node) {
@@ -4643,21 +5018,27 @@ function getRouteFocusMetrics(node) {
       depthLead: 0,
       score: 0,
       shouldNotify: false,
+      isDeepening: false,
+      isLeafBiased: false,
       branchAnchorTitle: ""
     };
   }
 
-  const path = getPathToNode(node.id);
+  const path = getPathForRouteMetrics(node);
   const depthLead = getDepthLeadForExistingNode(node);
   const branchAnchorIndex = findNearestBranchAnchorIndex(path);
   const focusDepth = Math.max(0, path.length - branchAnchorIndex - 1);
   const score = Math.max(focusDepth, depthLead);
+  const isDeepening = focusDepth >= 5;
+  const isLeafBiased = depthLead >= 3;
 
   return {
     focusDepth,
     depthLead,
     score,
-    shouldNotify: focusDepth >= 5 || (focusDepth >= 4 && depthLead >= 3),
+    shouldNotify: isDeepening || isLeafBiased,
+    isDeepening,
+    isLeafBiased,
     branchAnchorTitle: path[branchAnchorIndex]?.title || "현재 주제"
   };
 }
@@ -4693,16 +5074,47 @@ function buildRouteNoticeForPendingQuestion({ question, parent, nextDepth, isNew
     };
   }
 
-  if (isNewBranch || depthLead >= 3) {
+  const projectedNode = parent
+    ? {
+        id: "__pending__",
+        parentId: parent.id,
+        depth: nextDepth,
+        title: question,
+        userQuestion: question
+      }
+    : null;
+  const focusNotice = buildRouteFocusNotice(projectedNode);
+  if (focusNotice) {
     return {
-      type: "info",
-      kind: depthLead >= 3 ? "depth" : "branch",
-      message: buildDeepBranchNoticeMessage({ depth: nextDepth, isNewBranch, depthLead }),
+      ...focusNotice,
       createdAt: Date.now()
     };
   }
 
-  return null;
+  if (!isNewBranch) {
+    return null;
+  }
+
+  return {
+    type: "info",
+    kind: "branch",
+    message: buildDeepBranchNoticeMessage({ depth: nextDepth, isNewBranch, depthLead }),
+    createdAt: Date.now()
+  };
+}
+
+function buildRouteFocusNotice(node) {
+  const metrics = getRouteFocusMetrics(node);
+  if (!metrics.shouldNotify) {
+    return null;
+  }
+  return {
+    type: "info",
+    kind: metrics.isDeepening && metrics.isLeafBiased
+      ? "depth-mixed"
+      : (metrics.isDeepening ? "deepening" : "leaf-bias"),
+    message: buildFocusDepthStatusMessage(metrics)
+  };
 }
 
 function buildDeepBranchNoticeMessage({ depth, isNewBranch, depthLead }) {
@@ -4780,7 +5192,8 @@ function isQuestionOutsideRootTopic(question, parent) {
   const rootText = [
     root.title,
     root.userQuestion,
-    getCurrentRoomTitle()
+    getCurrentRoomTitle(),
+    ...collectRootContextTokens(root, new Set(getPathToNode(parent.id).map((node) => String(node.id))))
   ].filter(Boolean).join(" ");
   const pathText = getPathToNode(parent.id)
     .map((node) => `${node.title || ""} ${node.userQuestion || ""}`)
@@ -4788,7 +5201,7 @@ function isQuestionOutsideRootTopic(question, parent) {
   const rootSimilarity = textTokenSimilarity(question, rootText);
   const pathSimilarity = textTokenSimilarity(question, pathText);
 
-  return rootSimilarity < 0.08 && pathSimilarity < 0.08 && extractMeaningfulTokens(question).length >= 2;
+  return rootSimilarity < 0.08 && pathSimilarity < 0.08 && extractMeaningfulTokens(question).length >= 1;
 }
 
 function getRootNodeForNode(node) {
@@ -4829,7 +5242,18 @@ function extractMeaningfulTokens(text) {
     .replace(/[^0-9a-z가-힣]+/g, " ")
     .split(/\s+/)
     .map((token) => token.trim())
+    .map(normalizeMeaningfulToken)
     .filter((token) => token.length >= 2 && !stopwords.has(token));
+}
+
+function normalizeMeaningfulToken(token) {
+  const value = String(token || "").trim();
+  if (!/[가-힣]/.test(value)) {
+    return value;
+  }
+  return value
+    .replace(/(으로|에서|에게|보다|처럼|까지|부터|이나|거나|하고|이고|이며|인데|인가|은|는|이|가|을|를|에|와|과|의|도|만|로)$/u, "")
+    .trim();
 }
 
 function cloneConversationPathNodes(pathNodes) {
@@ -5345,9 +5769,12 @@ function applyInsightPayload(insight, fallbackNode) {
 function applyInsightDepthUi(depthValue, node = null) {
   const notice = getActiveRouteNotice(node);
   const focusMetrics = getRouteFocusMetrics(node);
+  const zeroDepthTopicDriftNotice = buildZeroDepthTopicDriftNotice(node, focusMetrics);
   const ratio = Math.min(100, Math.max(10, Math.round((focusMetrics.score / 3) * 100)));
   const isDepthOverLimit = focusMetrics.shouldNotify;
-  const depthNotice = notice?.kind === "depth" || notice?.kind === "topic" ? notice : null;
+  const depthNotice = notice && (isDepthRouteNoticeKind(notice.kind) || notice.kind === "topic")
+    ? notice
+    : zeroDepthTopicDriftNotice;
 
   if (el.depthBar) {
     el.depthBar.style.width = `${ratio}%`;
@@ -5369,8 +5796,11 @@ function applyInsightDepthUi(depthValue, node = null) {
 
   if (isDepthOverLimit) {
     if (el.driftAlert) {
+      const noticeKind = focusMetrics.isDeepening && focusMetrics.isLeafBiased
+        ? "depth-mixed"
+        : (focusMetrics.isDeepening ? "deepening" : "leaf-bias");
       el.driftAlert.textContent = buildFocusDepthStatusMessage(focusMetrics);
-      el.driftAlert.className = "alert route-notice info depth";
+      el.driftAlert.className = `alert route-notice info ${noticeKind}`;
     }
     return;
   }
@@ -5383,12 +5813,73 @@ function applyInsightDepthUi(depthValue, node = null) {
   }
 }
 
+function buildZeroDepthTopicDriftNotice(node, focusMetrics) {
+  if (!node || !focusMetrics || Number(focusMetrics.focusDepth || 0) !== 0) {
+    return null;
+  }
+  if (!node.parentId || Number(node.depth || 0) <= 0) {
+    return null;
+  }
+  if (hasAcceptedRootTopicNotice(node.id)) {
+    return null;
+  }
+
+  const rootTopic = getRootTopicLabelForNode(node.id);
+  const notice = {
+    nodeId: String(node.id),
+    type: "strong",
+    kind: "topic",
+    message: `연속 심화 0단계입니다. 대주제 '${rootTopic}'와 흐름이 끊긴 노드일 수 있어 새 대화방에서 분리하는 것을 권장합니다.`,
+    createdAt: Date.now()
+  };
+  setRouteNotice(notice);
+  clearBranchNotice();
+  if (state.rootTopicNoticeNodeIds.has(String(node.id))) {
+    return notice;
+  }
+  state.rootTopicNoticeNodeIds.add(String(node.id));
+  setTimeout(() => {
+    void openRootTopicDecisionDialog({
+      unrelated: true,
+      rootTopic,
+      similarity: 0
+    }).then(async (choice) => {
+      if (choice === "continue") {
+        rememberAcceptedRootTopicNotice(node.id);
+        clearRouteNotice();
+        renderInsights();
+        return;
+      }
+      if (choice === "cancel") {
+        return;
+      }
+      if (choice !== "new_room") {
+        return;
+      }
+      try {
+        const currentNode = getNodeById(node.id);
+        const question = currentNode?.userQuestion || node.userQuestion || node.title || "";
+        const localRoom = getLocalConversationRoom();
+        const sourceRoomId = localRoom?.sourceRoomId || state.currentRoomId;
+        await startNewRoomWithQuestion(question, { removeNodeId: node.id, sourceRoomId });
+      } catch (error) {
+        setAuthMessage(`새 대화방 생성 실패: ${toUiError(error)}`, "error");
+        render();
+      }
+    });
+  }, 0);
+  return notice;
+}
+
 function buildFocusDepthStatusMessage(metrics) {
   const topic = metrics.branchAnchorTitle || "현재 주제";
-  const leadText = metrics.depthLead >= 3
-    ? ` 다른 리프보다 ${metrics.depthLead}단계 깊습니다.`
-    : "";
-  return `'${topic}' 흐름에서 ${metrics.focusDepth}단계 연속 심화 중입니다.${leadText} 다른 하위 개념도 함께 확인해보세요.`;
+  if (metrics.isDeepening && metrics.isLeafBiased) {
+    return `[심화] '${topic}'에서 ${metrics.focusDepth}단계째 이어지고 있습니다.\n[리프 편향] 다른 리프보다 ${metrics.depthLead}단계 깊습니다. 다른 하위 노드도 함께 확인해보세요.`;
+  }
+  if (metrics.isDeepening) {
+    return `[심화 알림] '${topic}'에서 ${metrics.focusDepth}단계째 이어지고 있습니다. 다른 하위 노드도 함께 확인해보세요.`;
+  }
+  return `[리프 편향] 현재 경로가 다른 리프보다 ${metrics.depthLead}단계 깊습니다. 다른 하위 노드도 함께 확인해보세요.`;
 }
 
 function renderConversationSummary(items) {
@@ -5582,12 +6073,32 @@ function setGraphZoom(value) {
 function resetGraphZoom() {
   state.graphZoom = 1;
   state.graphScopeMode = "range";
-  state.graphTreeScale = 1;
+  if (state.treeFocusMode) {
+    state.focusMindmapViewport = null;
+  } else {
+    state.graphTreeScale = 1;
+  }
   renderTree();
 }
 
 function changeGraphTreeScale(delta) {
   if (state.treeViewMode !== "graph") {
+    return;
+  }
+  if (state.treeFocusMode && focusCytoscape) {
+    const currentZoom = focusCytoscape.zoom();
+    const nextZoom = clamp(currentZoom + delta, focusCytoscape.minZoom(), focusCytoscape.maxZoom());
+    focusCytoscape.zoom({
+      level: nextZoom,
+      renderedPosition: {
+        x: (el.treeRoot?.clientWidth || 0) / 2,
+        y: (el.treeRoot?.clientHeight || 0) / 2
+      }
+    });
+    state.focusMindmapViewport = {
+      zoom: focusCytoscape.zoom(),
+      pan: focusCytoscape.pan()
+    };
     return;
   }
   state.graphTreeScale = clamp(Number((state.graphTreeScale + delta).toFixed(2)), 0.5, 4);
@@ -5629,6 +6140,7 @@ function toggleTreeFocusMode() {
 }
 
 function setTreeFocusMode(enabled) {
+  const wasFocusMode = state.treeFocusMode;
   state.treeFocusMode = Boolean(enabled);
   if (state.treeFocusMode && state.treeViewMode !== "graph") {
     state.treeViewMode = "graph";
@@ -5636,6 +6148,9 @@ function setTreeFocusMode(enabled) {
   if (state.treeFocusMode) {
     state.graphResizeMode = false;
     state.focusGraphLayout = "mindmap";
+    if (!wasFocusMode) {
+      state.focusMindmapViewport = null;
+    }
   }
   document.body.classList.toggle("tree-focus-active", state.currentView === "app" && state.treeFocusMode);
   render();

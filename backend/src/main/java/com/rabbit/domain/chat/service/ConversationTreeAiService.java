@@ -25,6 +25,29 @@ public interface ConversationTreeAiService {
     String selectBestSubtopic(@UserMessage String prompt);
 
     @SystemMessage({
+            "You decide whether a user question is inside the same broad root topic of a conversation.",
+            "Return exactly one token: RELATED or UNRELATED.",
+            "Use semantic topic boundaries, not keyword overlap.",
+            "RELATED means the question can reasonably be studied under the root topic, including sibling subtopics.",
+            "UNRELATED means the question belongs to a different broad domain and should start a separate chat room.",
+            "If the question is about a concrete object, activity, religion, science, economy, or other domain that is not naturally inside the root topic, return UNRELATED.",
+            "Do not treat any topic as related just because it could be mentioned metaphorically or in a very broad discussion.",
+            "Do not explain, do not use markdown, and do not return JSON."
+    })
+    String classifyRootTopicRelation(@UserMessage String prompt);
+
+    @SystemMessage({
+            "You decide strict topic containment for a conversation root topic.",
+            "Return exactly one token: RELATED or UNRELATED.",
+            "RELATED means the new question is a normal direct or indirect subtopic, example, tool, application, method, or concept studied inside the root topic.",
+            "UNRELATED means the new question belongs to another standalone field, discipline, object, product, material, belief system, person, place, or activity.",
+            "Different academic disciplines are UNRELATED unless one is normally recognized as a subfield of the other.",
+            "Adjacent, interdisciplinary, or broadly educational relationships are not enough for RELATED.",
+            "Do not explain, do not use markdown, and do not return JSON."
+    })
+    String classifyStrictRootTopicContainment(@UserMessage String prompt);
+
+    @SystemMessage({
             "You generate domain hints for one subtopic inside a larger root topic.",
             "Return 6 to 10 short concepts separated only by commas.",
             "Use representative concepts and keywords that strongly identify the subtopic.",
