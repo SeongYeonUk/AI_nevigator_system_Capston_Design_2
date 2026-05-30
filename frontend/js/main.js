@@ -5618,9 +5618,6 @@ async function confirmRebuildConversation() {
 /**
  * 💡 지식 추출 API 호출 및 다중 경로 미니 그래프 표시 함수
  */
-/**
- * 💡 지식 추출 API 호출 및 다중 경로 미니 그래프 표시 함수
- */
 async function executeKnowledgeExtraction(payload) {
   const contentArea = document.getElementById("extractResultContent");
   const pathPreviewArea = document.getElementById("extractResultPathPreview"); 
@@ -5635,7 +5632,7 @@ async function executeKnowledgeExtraction(payload) {
   // 2. 수집할 노드 ID들을 담을 Set
   const targetIds = new Set();
 
-  // 🌟 (핵심 헬퍼 함수) 특정 노드에서 루트까지 거슬러 올라가며 ID를 수집합니다.
+  // 🌟 특정 노드에서 루트까지 거슬러 올라가며 ID를 수집합니다.
   const addPathToRoot = (nodeId) => {
     let cursor = state.nodes.find(n => String(n.id) === String(nodeId));
     while (cursor) {
@@ -5650,11 +5647,8 @@ async function executeKnowledgeExtraction(payload) {
   // (2) '추가로 가져올 노드/가지' 로 선택한 ID 수집
   if (payload.extraBranchIds && payload.extraBranchIds.length > 0) {
     payload.extraBranchIds.forEach(branchId => {
-      // 1) 선택한 가지의 하위 노드(자식들) 전부 수집
       const subIds = collectSubtreeIds(branchId, state.nodes);
       subIds.forEach(id => targetIds.add(String(id)));
-      
-      // 2) 🌟 빼먹기 쉬운 윗단(부모들)도 루트까지 거슬러 올라가며 꽉꽉 채워 넣기!
       addPathToRoot(branchId);
     });
   }
@@ -5662,24 +5656,27 @@ async function executeKnowledgeExtraction(payload) {
   // 3. 빠진 것 없이 완벽하게 수집된 ID들로 트리 재조립
   const nodesToDraw = buildLocalConversationNodes(state.nodes, targetIds);
 
-  // 4. 모달창 미니 그래프 그리기 (drawMiniGraph 함수는 기존 그대로 유지)
+  // 4. 모달창 미니 그래프 그리기 (수정된 drawMiniGraph 호출)
   drawMiniGraph(pathPreviewArea, nodesToDraw);
 
   try {
-    // 5. 백엔드 통신
+    // 5. 백엔드 통신 (body에 수집된 모든 nodeIds를 포함하여 전송)
     const response = await fetch('http://localhost:8080/api/chat/room/extract', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${state.currentSession?.accessToken}`
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        ...payload,
+        nodeIds: Array.from(targetIds).map(Number) // 🌟 [1번 해결] 모든 경로 ID 리스트 주입
+      })
     });
 
     if (!response.ok) throw new Error(`요청 실패 (상태: ${response.status})`);
     const resultText = await response.text();
-    contentArea.innerHTML = resultText.replace(/\n/g, "<br>");
-    // 🌟 핵심: 결과 텍스트를 마크다운으로 렌더링
+    
+    // 🌟 결과 텍스트를 마크다운으로 렌더링
     contentArea.innerHTML = marked.parse(resultText);
 
   } catch (error) {
@@ -5692,55 +5689,84 @@ async function executeKnowledgeExtraction(payload) {
  * 🌟 [새로 추가] 모달창 안에 쏙 들어가는 전용 미니 트리 렌더링 함수
  * (이 함수를 executeKnowledgeExtraction 바로 아래에 붙여넣어 주세요)
  */
+/**
+ * 🌟 [2번 해결] 원본 트리의 크기 조절 및 글자수 로직을 완벽 반영한 미니 트리 렌더링 함수
+ */
 function drawMiniGraph(container, nodesToDraw) {
   container.innerHTML = "";
   if (!nodesToDraw || nodesToDraw.length === 0) return;
 
-  // 민교님이 만들어둔 기존 그래프 레이아웃 엔진 완벽 재활용!
-  const graph = getTreeGraphLayout(nodesToDraw);
+  // 민교님이 만들어둔 기존 그래프 레이아웃 엔진 및 옵션 완벽 결합
+  const options = getGraphRenderOptions();
+  const graph = getTreeGraphLayout(nodesToDraw, options);
   const svgNS = "http://www.w3.org/2000/svg";
 
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "tree-graph-svg");
-  // 트리가 가운데 예쁘게 맞도록 viewBox 설정
   svg.setAttribute("viewBox", `0 0 ${graph.width} ${graph.height}`);
   svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
   svg.style.width = "100%";
   svg.style.height = "100%";
-  svg.style.minHeight = "250px"; // 모달창에서 찌그러지지 않게 최소 높이 보장
+  svg.style.minHeight = "250px"; 
 
   // 선(Link) 그리기
   graph.links.forEach((link) => {
-    const line = document.createElementNS(svgNS, "line");
-    line.setAttribute("x1", String(link.x1));
-    line.setAttribute("y1", String(link.y1));
-    line.setAttribute("x2", String(link.x2));
-    line.setAttribute("y2", String(link.y2));
-    line.setAttribute("class", "tree-link");
-    svg.appendChild(line);
+    const path = document.createElementNS(svgNS, "path");
+    const verticalDistance = Math.max(20, Math.abs(link.y2 - link.y1));
+    const midY = link.y1 + verticalDistance * 0.5;
+    path.setAttribute("d", `M ${link.x1} ${link.y1} C ${link.x1} ${midY}, ${link.x2} ${midY}, ${link.x2} ${link.y2}`);
+    path.setAttribute("class", "tree-link");
+    svg.appendChild(path);
   });
 
-  // 동그라미 노드 그리기
+  // 동적 노드 및 텍스트 분할 처리 그리기
   graph.nodes.forEach((node) => {
     const nodeGroup = document.createElementNS(svgNS, "g");
     nodeGroup.setAttribute("class", "tree-node-group");
 
-    const circle = document.createElementNS(svgNS, "circle");
-    circle.setAttribute("cx", String(node.x));
-    circle.setAttribute("cy", String(node.y));
-    circle.setAttribute("r", "20");
-    // 💡 포인트: 추출된 경로는 강조되어야 하니 모두 'active' 색상(민트색)을 입혀줍니다!
-    circle.setAttribute("class", "tree-node-circle active"); 
+    const isBox = node.visualShape === "box" || node.visualShape === "mini-box";
+    const shape = isBox
+      ? document.createElementNS(svgNS, "rect")
+      : document.createElementNS(svgNS, "ellipse");
 
-    const label = document.createElementNS(svgNS, "text");
-    label.setAttribute("x", String(node.x));
-    label.setAttribute("y", String(node.y + 5));
-    label.setAttribute("class", "tree-node-label");
-    label.textContent = node.title.length > 6 ? `${node.title.slice(0, 6)}...` : node.title;
-    label.style.pointerEvents = "none";
+    if (isBox) {
+      shape.setAttribute("x", String(node.x - node.width / 2));
+      shape.setAttribute("y", String(node.y - node.height / 2));
+      shape.setAttribute("width", String(node.width));
+      shape.setAttribute("height", String(node.height));
+      shape.setAttribute("rx", String(node.visualShape === "mini-box" ? 5 : options.cornerRadius));
+      shape.setAttribute("ry", String(node.visualShape === "mini-box" ? 5 : options.cornerRadius));
+    } else {
+      shape.setAttribute("cx", String(node.x));
+      shape.setAttribute("cy", String(node.y));
+      shape.setAttribute("rx", String(node.rx));
+      shape.setAttribute("ry", String(node.ry));
+    }
+    shape.setAttribute("class", "tree-node-circle active"); 
 
-    nodeGroup.appendChild(circle);
-    nodeGroup.appendChild(label);
+    nodeGroup.appendChild(shape);
+
+    if (node.showLabel) {
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", String(node.x));
+      label.setAttribute("y", String(getGraphLabelStartY(node, options)));
+      label.setAttribute("class", "tree-node-label");
+      label.style.fontSize = `${node.fontSize || options.fontSize}px`;
+
+      if (isBox) {
+        node.lines.forEach((line, index) => {
+          const tspan = document.createElementNS(svgNS, "tspan");
+          tspan.setAttribute("x", String(node.x));
+          tspan.setAttribute("dy", index === 0 ? "0" : String(node.lineHeight || options.lineHeight));
+          tspan.textContent = line;
+          label.appendChild(tspan);
+        });
+      } else {
+        label.textContent = node.lines?.[0] || getCircleNodeTitle(node.title, options.circleLabelLength);
+      }
+      nodeGroup.appendChild(label);
+    }
+
     svg.appendChild(nodeGroup);
   });
 

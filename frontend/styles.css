@@ -3213,6 +3213,75 @@ body[data-theme="lavender"] #selectedNodeMeta,
 body[data-theme="lavender"] .summary-item-detail {
   color: #334155 !important;        /* 진한 다크 슬레이트 */
 }
+/* ==========================================================================
+   기본 색상 테마(default)일 때만 하단/상단 버튼 색상 교체
+   ========================================================================== */
+
+/* body에 data-theme 속성이 없거나 default일 때만 실행 */
+body:not([data-theme]) #graphZoomFooter .zoom-btn,
+body:not([data-theme]) #graphZoomFooter .shape-btn,
+body[data-theme="default"] #graphZoomFooter .zoom-btn,
+body[data-theme="default"] #graphZoomFooter .shape-btn {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important; /* 글씨색 흰색으로 */
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+/* 기본 테마 - 중앙 셀렉트 박스 색상 보정 */
+body:not([data-theme]) #graphZoomFooter .zoom-select,
+body[data-theme="default"] #graphZoomFooter .zoom-select {
+  background-color: rgba(6, 19, 27, 0.8) !important;
+  background: rgba(6, 19, 27, 0.8) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+/* 기본 테마 - 마우스 올렸을 때(Hover) 민트색 포인트 */
+body:not([data-theme]) #graphZoomFooter .zoom-btn:hover,
+body:not([data-theme]) #graphZoomFooter .shape-btn:hover,
+body[data-theme="default"] #graphZoomFooter .zoom-btn:hover,
+body[data-theme="default"] #graphZoomFooter .shape-btn:hover {
+  background-color: rgba(94, 223, 214, 0.15) !important;
+  background: rgba(94, 223, 214, 0.15) !important;
+  color: #5edfd6 !important;
+  border-color: #5edfd6 !important;
+}
+
+/* 기본 테마 - 활성화된(.active) 버튼 민트색 고정 */
+body:not([data-theme]) #graphZoomFooter .shape-btn.active,
+body:not([data-theme]) #graphZoomFooter .zoom-btn.active,
+body[data-theme="default"] #graphZoomFooter .shape-btn.active,
+body[data-theme="default"] #graphZoomFooter .zoom-btn.active {
+  background-color: rgba(94, 223, 214, 0.25) !important;
+  background: rgba(94, 223, 214, 0.25) !important;
+  color: #ffffff !important;
+  border-color: #5edfd6 !important;
+}
+
+/* ==========================================================================
+   기본 색상 테마(default) - 상단 [마크업], [선택 삭제] 버튼 세트 색상 보정
+   ========================================================================== */
+body:not([data-theme]) #markImportantNodeBtn,
+body:not([data-theme]) #deleteSelectedNodeBtn,
+body[data-theme="default"] #markImportantNodeBtn,
+body[data-theme="default"] #deleteSelectedNodeBtn {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+body:not([data-theme]) #markImportantNodeBtn:hover,
+body:not([data-theme]) #deleteSelectedNodeBtn:hover,
+body[data-theme="default"] #markImportantNodeBtn:hover,
+body[data-theme="default"] #deleteSelectedNodeBtn:hover {
+  background: rgba(94, 223, 214, 0.15) !important;
+  color: #5edfd6 !important;
+  border-color: #5edfd6 !important;
+}
 
 /* 패널 접기/펼치기: 화면 표시만 전환하고 내부 상태와 API 흐름은 유지 */
 .panel-collapse-btn,
@@ -3346,4 +3415,324 @@ body.tree-focus-active .tree-panel {
 body.tree-focus-active .tree-root {
   height: 100% !important;
   min-height: 0 !important;
+}
+
+/* ==========================================================================
+   경로 학습 리포트 모달 가독성 향상 및 딥블랙 스케일 전환
+   ========================================================================== */
+
+/* 모달 전체 카드 배경 정돈 */
+#extractResultModalBackdrop .modal-card {
+  background: #090d10 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 제목 가독성 확보 및 네온 번짐 효과 제거 */
+#extractResultModalBackdrop h3,
+#extractResultModalBackdrop h4 {
+  color: #ffffff !important;
+  text-shadow: none !important;
+  font-weight: 700 !important;
+}
+
+/* 요약 리포트 본문 텍스트 시인성 확보 */
+#extractResultContent {
+  color: #e2e8f0 !important;
+  line-height: 1.75 !important;
+}
+
+/* [3번 핵심] 선택된 지식 경로 박스 배경을 가독성 좋은 완전 검은색으로 고정 */
+#extractResultModalBackdrop .rebuild-path-block {
+  background: #020617 !important; /* 투명도 없는 순수 딥블랙 계열 */
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8) !important;
+}
+
+/* 미니 트리 내부 링크 선 명도 낮추기 */
+#extractResultPathPreview .tree-link {
+  stroke: rgba(255, 255, 255, 0.2) !important;
+  stroke-width: 2px !important;
+}
+
+/* 미니 트리 텍스트 가독성 고정 */
+#extractResultPathPreview .tree-node-label {
+  fill: #ffffff !important;
+  font-weight: 600 !important;
+}
+
+/* ==========================================================================
+   기본 색상 테마(default)일 때만 하단/상단 버튼 색상 교체
+   ========================================================================== */
+
+/* body에 data-theme 속성이 없거나 default일 때만 실행 */
+body:not([data-theme]) #graphZoomFooter .zoom-btn,
+body:not([data-theme]) #graphZoomFooter .shape-btn,
+body[data-theme="default"] #graphZoomFooter .zoom-btn,
+body[data-theme="default"] #graphZoomFooter .shape-btn {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important; /* 글씨색 흰색으로 */
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+/* 기본 테마 - 중앙 셀렉트 박스 색상 보정 */
+body:not([data-theme]) #graphZoomFooter .zoom-select,
+body[data-theme="default"] #graphZoomFooter .zoom-select {
+  background-color: rgba(6, 19, 27, 0.8) !important;
+  background: rgba(6, 19, 27, 0.8) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+/* 기본 테마 - 마우스 올렸을 때(Hover) 민트색 포인트 */
+body:not([data-theme]) #graphZoomFooter .zoom-btn:hover,
+body:not([data-theme]) #graphZoomFooter .shape-btn:hover,
+body[data-theme="default"] #graphZoomFooter .zoom-btn:hover,
+body[data-theme="default"] #graphZoomFooter .shape-btn:hover {
+  background-color: rgba(94, 223, 214, 0.15) !important;
+  background: rgba(94, 223, 214, 0.15) !important;
+  color: #5edfd6 !important;
+  border-color: #5edfd6 !important;
+}
+
+/* 기본 테마 - 활성화된(.active) 버튼 민트색 고정 */
+body:not([data-theme]) #graphZoomFooter .shape-btn.active,
+body:not([data-theme]) #graphZoomFooter .zoom-btn.active,
+body[data-theme="default"] #graphZoomFooter .shape-btn.active,
+body[data-theme="default"] #graphZoomFooter .zoom-btn.active {
+  background-color: rgba(94, 223, 214, 0.25) !important;
+  background: rgba(94, 223, 214, 0.25) !important;
+  color: #ffffff !important;
+  border-color: #5edfd6 !important;
+}
+
+/* ==========================================================================
+   기본 색상 테마(default) - 상단 [마크업], [선택 삭제] 버튼 세트 색상 보정
+   ========================================================================== */
+body:not([data-theme]) #markImportantNodeBtn,
+body:not([data-theme]) #deleteSelectedNodeBtn,
+body[data-theme="default"] #markImportantNodeBtn,
+body[data-theme="default"] #deleteSelectedNodeBtn {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+body:not([data-theme]) #markImportantNodeBtn:hover,
+body:not([data-theme]) #deleteSelectedNodeBtn:hover,
+body[data-theme="default"] #markImportantNodeBtn:hover,
+body[data-theme="default"] #deleteSelectedNodeBtn:hover {
+  background: rgba(94, 223, 214, 0.15) !important;
+  color: #5edfd6 !important;
+  border-color: #5edfd6 !important;
+}
+/* ==========================================================================
+   경로 학습 리포트 모달 - 완벽한 라이트(화이트) 테마 가독성 보정
+   ========================================================================== */
+
+/* 1. 모달 카드 배경을 깔끔한 흰색(White)으로 변경 */
+#extractResultModalBackdrop .modal-card {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* 2. 모달 상단 타이틀 및 라벨 텍스트를 진한 검은색으로 보정 */
+#extractResultModalBackdrop h3,
+#extractResultModalBackdrop h4,
+#extractResultModalBackdrop .rebuild-section-label {
+  color: #0f172a !important; /* 묵직한 다크 슬레이트 블랙 */
+  text-shadow: none !important;
+}
+
+/* 3. 리포트 본문 마크다운 텍스트 전체 가독성 최고 수준으로 블랙 오버라이딩 */
+#extractResultContent,
+#extractResultContent p,
+#extractResultContent li,
+#extractResultContent span,
+#extractResultContent div {
+  color: #334155 !important; /* 읽기 가장 편한 다크 그레이 */
+}
+
+#extractResultContent h1,
+#extractResultContent h2,
+#extractResultContent h3,
+#extractResultContent h4 {
+  color: #0f172a !important; /* 본문 내 대제목/소제목은 완전한 검은색 */
+}
+
+#extractResultContent strong {
+  color: #0d9488 !important; /* 강조 구문은 화이트 배경에 잘 어울리는 딥 민트 컬러 */
+}
+
+/* 4. 지식 경로 감싸는 박스를 깔끔한 연회색 도화지로 보정 */
+#extractResultModalBackdrop .rebuild-path-block {
+  background: #f8fafc !important; 
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: none !important;
+}
+
+/* 5. 🔥 [핵심 교정] 트리 내부의 모든 텍스트(SVG text, tspan)를 완전한 검은색으로 강제 변경 */
+#extractResultPathPreview text,
+#extractResultPathPreview tspan,
+#extractResultPathPreview .tree-node-label {
+  fill: #000000 !important;   /* SVG 텍스트 컬러는 color가 아니라 fill로 제어합니다 */
+  color: #000000 !important;  
+  font-weight: 700 !important; /* 글씨가 뭉개지지 않도록 두께감 부여 */
+}
+
+/* 6. 흰색 바탕에 묻히지 않도록 트리 관계선(Link) 명도 최적화 */
+#extractResultPathPreview .tree-link {
+  stroke: #94a3b8 !important; /* 선명한 그레이 라인 */
+  stroke-width: 2px !important;
+}
+
+/* ==========================================================================
+   [완벽 초기화] 패널 토글 방식: 버튼 삭제 -> 세로 라인 클릭 방식으로 변경
+   ========================================================================== */
+
+/* 1. 상단 기존 화살표 버튼 완전 제거 */
+#treeCollapseBtn, #treeExpandBtn, #insightCollapseBtn, #insightExpandBtn {
+  display: none !important;
+}
+
+/* 2. 패널 경계선(ResizeHandle) 스타일링 */
+.resize-handle {
+  width: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: col-resize;
+  transition: all 0.2s ease;
+  position: relative;
+  z-index: 5;
+}
+
+/* 3. 패널이 닫혔을 때 - 경계선이 탭 버튼으로 변신 */
+/* 트리 패널 닫힘 */
+body.tree-panel-collapsed #treeResizeHandle {
+  width: 12px !important;
+  background: rgba(94, 223, 214, 0.15) !important;
+  border-right: 2px solid #5edfd6 !important;
+  cursor: pointer !important;
+}
+/* 인사이트 패널 닫힘 */
+body.insight-panel-collapsed #insightResizeHandle {
+  width: 12px !important;
+  background: rgba(94, 223, 214, 0.15) !important;
+  border-left: 2px solid #5edfd6 !important;
+  cursor: pointer !important;
+}
+
+/* 4. 마우스 호버 시 강조 효과 */
+body.tree-panel-collapsed #treeResizeHandle:hover,
+body.insight-panel-collapsed #insightResizeHandle:hover {
+  background: rgba(94, 223, 214, 0.3) !important;
+  box-shadow: 0 0 10px rgba(94, 223, 214, 0.4) !important;
+}
+/* 1. 기존 모든 버튼 숨김 */
+#treeCollapseBtn, #treeExpandBtn, #insightCollapseBtn, #insightExpandBtn {
+    display: none !important;
+}
+
+/* 2. 패널 닫혔을 때 핸들러를 강제로 띄우는 코드 */
+body.tree-panel-collapsed #treeResizeHandle,
+body.insight-panel-collapsed #insightResizeHandle {
+    display: flex !important; /* 닫혀도 무조건 표시 */
+    visibility: visible !important;
+    position: fixed !important;
+    width: 14px !important;
+    height: 80px !important;
+    background: rgba(0, 0, 0, 0.05) !important;
+    border: 1px solid rgba(0, 0, 0, 0.15) !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    z-index: 99999 !important; /* 가장 위로 */
+}
+
+/* 위치 지정 */
+body.tree-panel-collapsed #treeResizeHandle { left: 0 !important; border-radius: 0 8px 8px 0; }
+body.insight-panel-collapsed #insightResizeHandle { right: 0 !important; border-radius: 8px 0 0 8px; }
+
+/* 호버 효과 (색상 변화 없이 테두리만) */
+body.tree-panel-collapsed #treeResizeHandle:hover,
+body.insight-panel-collapsed #insightResizeHandle:hover {
+    background: rgba(0, 0, 0, 0.1) !important;
+    border-color: rgba(0, 0, 0, 0.3) !important;
+}
+
+/* 화살표 강제 삽입 */
+body.tree-panel-collapsed #treeResizeHandle::after { content: "〉" !important; color: #666; margin: auto; }
+body.insight-panel-collapsed #insightResizeHandle::after { content: "〈" !important; color: #666; margin: auto; }
+/* 1. 기본 버튼 숨김 */
+#treeCollapseBtn, #treeExpandBtn, #insightCollapseBtn, #insightExpandBtn {
+    display: none !important;
+}
+
+/* 2. 닫혔을 때 버튼 스타일 (시인성 강화) */
+body.tree-panel-collapsed #treeResizeHandle,
+body.insight-panel-collapsed #insightResizeHandle {
+    display: flex !important;
+    visibility: visible !important;
+    position: fixed !important;
+    width: 14px !important; 
+    height: 80px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    
+    /* 🌟 불투명도를 0.4로 조절하여 눈부심을 줄이고 은은한 네온 감성 유지 */
+    background:rgba(114, 182, 177, 0.9) !important; 
+    border: rgba(114, 182, 177, 0.9) !important; 
+    box-shadow: 0 2px 8px rgba(164, 198, 195, 0.3) !important; 
+    
+    /* 내부 화살표 기호 색상을 다크한 톤으로 매칭해 시인성 확보 */
+    color: #000000 !important; 
+    
+    z-index: 99999 !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+}
+body.tree-panel-collapsed #treeResizeHandle { left: 0 !important; border-radius: 0 8px 8px 0; border-left: none; }
+body.insight-panel-collapsed #insightResizeHandle { right: 0 !important; border-radius: 8px 0 0 8px; border-right: none; }
+
+/* 3. 🌟 호버 시 강조 (색상은 유지하되, 밝기를 조정하여 확실한 변화) */
+body.tree-panel-collapsed #treeResizeHandle:hover,
+body.insight-panel-collapsed #insightResizeHandle:hover {
+    background: #e0e0e0 !important; /* 클릭 가능한 느낌을 주는 회색 */
+    border-color: #999 !important;  /* 테두리 진하게 */
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important; /* 그림자 진하게 */
+}
+
+/* 4. 화살표 표시 (어두운 색으로 명확하게) */
+body.tree-panel-collapsed #treeResizeHandle::after { content: "〉" !important; color: #333 !important; margin: auto; font-weight: 900; }
+body.insight-panel-collapsed #insightResizeHandle::after { content: "〈" !important; color: #333 !important; margin: auto; font-weight: 900; }
+
+
+/* 1. 🌟 트리 구조가 생성되는 메인 컨테이너 고정 */
+.tree-container, #treeLayout {
+    /* 트리가 그려지기 전이든 후든 무조건 부모 패널 높이를 100% 다 쓰도록 고정 */
+    height: 100% !important;
+    flex-grow: 1 !important; 
+    
+    /* 💡 핵심: 내부 요소(노드)가 커져도 부모 박스 크기가 절대 변하지 않도록 차단 */
+    overflow: hidden !important; 
+    
+    /* 한 단계 더 격리: 자식 요소의 크기 변화가 부모 레이아웃에 영향을 주지 않음 */
+    contain: size layout; 
+}
+
+/* 2. 🌟 트리 구성 중(로딩 스피너나 플레이스홀더 상태)일 때 */
+.tree-loading-state, .tree-placeholder {
+    /* 💡 트리가 다 안 그려졌을 때도 빈 공간을 미리 채워두어 AI 답변 창이 내려앉는 것 방지 */
+    height: 100% !important;
+    min-height: 300px; /* 프로젝트 트리 평균 높이에 맞게 재환님이 조절 가능 */
+}
+
+/* 3. 🌟 AI 답변 창이 트리에 밀려 올라가거나 내려가지 않도록 독자 영역 확보 */
+.ai-response-section {
+    /* 답변 창 자체도 높이를 유연하게 늘리지 말고, 지정된 비율이나 높이 내에서만 놀게 고정 */
+    flex-shrink: 0 !important; 
+    overflow-y: auto !important;
 }

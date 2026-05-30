@@ -3365,33 +3365,46 @@ public class ChatService {
 
     public String extractKnowledge(ConversationRebuildRequest request) {
         // 1. 노드 수집
-        ChatMessage selectedNode = chatMessageRepository.findById(request.getSelectedNodeId())
-                .orElseThrow(() -> new IllegalArgumentException("노드를 찾을 수 없습니다."));
-
         Set<Long> targetIds = new HashSet<>();
-        ChatMessage pathCursor = selectedNode;
-        while (pathCursor != null) {
-            targetIds.add(pathCursor.getId());
-            pathCursor = pathCursor.getParent();
+
+        // 🌟 [핵심 교정] 프론트엔드에서 Cytoscape가 정확히 수집해서 넘겨준 nodeIds가 있다면 최우선 사용!
+        if (request.getNodeIds() != null && !request.getNodeIds().isEmpty()) {
+            targetIds.addAll(request.getNodeIds());
+            System.out.println("🎯 [지식 추출] 프론트엔드 전송 경로 ID 수집 완료: " + targetIds);
+        } else {
+            // 폴백(Fallback): 혹시 모를 기존 호출이나 데이터 누락을 위한 기존 역추적 로직 유지
+            ChatMessage selectedNode = chatMessageRepository.findById(request.getSelectedNodeId())
+                    .orElseThrow(() -> new IllegalArgumentException("노드를 찾을 수 없습니다."));
+
+            ChatMessage pathCursor = selectedNode;
+            while (pathCursor != null) {
+                targetIds.add(pathCursor.getId());
+                pathCursor = pathCursor.getParent();
+            }
         }
+
+        // 추가 선택한 가지(Branch)들의 하위 노드 수집
         for (Long branchId : request.getExtraBranchIds()) {
             collectSubtreeIds(branchId, targetIds);
         }
 
-        // 🚨 이 부분이 지워져서 'messages' 심볼 에러가 났던 겁니다! 다시 추가 완료!
+        // 메시지 일괄 조회 및 시간순 정렬
         List<ChatMessage> messages = chatMessageRepository.findAllById(targetIds);
         messages.sort(Comparator.comparing(ChatMessage::getCreatedAt));
 
-        // 2. AI에게 읽힐 "원문 텍스트" 조립 (프론트로는 보내지 않고 AI만 읽음)
+        // 2. AI에게 읽힐 "원문 텍스트" 조립
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append("다음은 사용자가 선택한 대화 트리 내용입니다.\n\n");
         for (ChatMessage msg : messages) {
             String role = msg.getSender() == SenderRole.USER ? "질문" : "답변";
             promptBuilder.append(String.format("[%s]: %s\n", role, msg.getContent()));
         }
-        promptBuilder.append("\n\n위 내용을 바탕으로 핵심 지식을 추출하여 리포트를 작성해줘.");
 
-        // 3. AI API 호출 (텍스트 요약만 받아와서 바로 프론트로 리턴)
+        // 🌟 [프롬프트 가드레일 추가] 최상위 대주제 맥락을 빠뜨리지 않도록 지침 명시
+        promptBuilder.append("\n\n위 내용을 바탕으로 핵심 지식을 추출하여 리포트를 작성해줘.\n");
+        promptBuilder.append("주의: 리포트 서두에는 이 학습 경로의 최상위 대주제(예: 운영체제 등)에 대한 정의와 전체적인 맥락을 반드시 포함하여 작성해줘.");
+
+        // 3. AI API 호출
         return rabbitGuardService.chat(request.getSourceRoomId(), promptBuilder.toString());
     }
 
