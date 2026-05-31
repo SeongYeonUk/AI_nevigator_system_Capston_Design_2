@@ -238,6 +238,30 @@ if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
 applyUiTheme(state.uiTheme);
 bindEvents();
 setupPanelResizers();
+// ==========================================================================
+  // 🎯 [신규 추가] 알약 버튼 클릭 시 패널 열림 맥 전격 개통 (이벤트 위임)
+  // ==========================================================================
+  document.addEventListener("click", (event) => {
+    // 1. 트리 패널 알약 버튼 클릭 감지
+    const treeHandle = event.target.closest("#treeResizeHandle");
+    if (treeHandle && state.treePanelCollapsed) {
+      console.log("🎯 [PathLearn] 왼쪽 트리 패널 펼치기 발동");
+      event.preventDefault();
+      setPanelCollapsed("tree", false); // 패널 열기 상태로 전환
+      render(); // 즉시 화면 갱신
+      return;
+    }
+
+    // 2. 인사이트 패널 알약 버튼 클릭 감지
+    const insightHandle = event.target.closest("#insightResizeHandle");
+    if (insightHandle && state.insightPanelCollapsed) {
+      console.log("🎯 [PathLearn] 오른쪽 인사이트 패널 펼치기 발동");
+      event.preventDefault();
+      setPanelCollapsed("insight", false); // 패널 열기 상태로 전환
+      render(); // 즉시 화면 갱신
+      return;
+    }
+  });
 render();
 if (typeof window !== "undefined") {
   window.__PATHLEARN_MAIN_READY = true;
@@ -1294,7 +1318,7 @@ function startTreeProcessingWatcher(roomId, targetNodeId = null) {
   const watcherToken = ++state.treeProcessingWatcherToken;
   const startedAt = Date.now();
   const timeoutMs = 45000;
-  const intervalMs = 900;
+  const intervalMs = 3000; // 💡 기존 900에서 3000(3초)으로 최적화 변경
 
   const tick = async () => {
     if (state.currentRoomId !== roomId || state.treeProcessingWatcherToken !== watcherToken) {
@@ -1311,7 +1335,10 @@ function startTreeProcessingWatcher(roomId, targetNodeId = null) {
     }
 
     if (state.treeBuildStatus === "processing" && Date.now() - startedAt < timeoutMs) {
-      render();
+      // 💡 AI가 답변을 열심히 출력하고 있을 때는 전체 render()를 막아 튕김을 1차 차단합니다.
+      if (!state.isSendingMessage) {
+        render(); 
+      }
       setTimeout(tick, intervalMs);
       return;
     }
@@ -1325,7 +1352,7 @@ function startTreeProcessingWatcher(roomId, targetNodeId = null) {
     render();
   };
 
-  void tick();
+  setTimeout(tick, intervalMs); // 비동기 무한 루프 안정성 확보
 }
 
 function treeToNodes(treeNodes) {
@@ -3795,28 +3822,47 @@ function renderChat() {
     return;
   }
 
-  el.chatFeed.innerHTML = "";
-
   const pathNodes = state.selectedNodeId ? getPathToNode(state.selectedNodeId) : [];
-  let selectedBubble = null;
-  pathNodes.forEach((node) => {
-    const isSelected = String(node.id) === String(state.selectedNodeId);
-    if (isAutoSubtopicSeedNode(node) && !isSelected) {
-      return;
-    }
-    const userBubble = makeBubble("user", node.userQuestion, node.timestamp, node.id, isSelected);
-    const aiBubble = makeBubble("ai", node.aiAnswer, node.timestamp + 1000, node.id, isSelected);
-    el.chatFeed.appendChild(userBubble);
-    el.chatFeed.appendChild(aiBubble);
-    if (isSelected) {
-      selectedBubble = aiBubble;
-    }
-  });
+  const currentBubblesCount = el.chatFeed.querySelectorAll(".bubble").length;
 
-  if (pathNodes.length === 0) {
-    el.chatFeed.appendChild(makeBubble("ai", "질문을 입력하면 첫 노드가 생성됩니다.", Date.now()));
+  // 현재 화면에 렌더링되어야 할 정답 말풍선 개수 계산
+  const expectedBubblesCount = pathNodes.length === 0 ? 1 : pathNodes.reduce((acc, node) => {
+    if (isAutoSubtopicSeedNode(node) && String(node.id) !== String(state.selectedNodeId)) return acc;
+    return acc + 2; // 유저 버블 + AI 버블
+  }, 0);
+
+  // 💡 [버그 원천 차단] 개수 자체가 변한 게 아니라면 innerHTML을 절대로 지우지 않습니다. (튕김 해소 핵심)
+  if (currentBubblesCount !== expectedBubblesCount) {
+    el.chatFeed.innerHTML = "";
+    
+    pathNodes.forEach((node) => {
+      const isSelected = String(node.id) === String(state.selectedNodeId);
+      if (isAutoSubtopicSeedNode(node) && !isSelected) {
+        return;
+      }
+      const userBubble = makeBubble("user", node.userQuestion, node.timestamp, node.id, isSelected);
+      const aiBubble = makeBubble("ai", node.aiAnswer, node.timestamp + 1000, node.id, isSelected);
+      el.chatFeed.appendChild(userBubble);
+      el.chatFeed.appendChild(aiBubble);
+    });
+
+    if (pathNodes.length === 0) {
+      el.chatFeed.appendChild(makeBubble("ai", "질문을 입력하면 첫 노드가 생성됩니다.", Date.now()));
+    }
+  } else {
+    // 💡 말풍선 개수가 그대로라면, 기존 DOM 뼈대는 냅두고 마지막 AI 답변 내용물 글자만 실시간 동기화
+    const lastPathNode = pathNodes[pathNodes.length - 1];
+    if (lastPathNode) {
+      const lastAiBubbleInFeed = el.chatFeed.querySelector(".bubble.ai:last-child");
+      const expectedLastAiHtml = marked.parse(lastPathNode.aiAnswer);
+      
+      if (lastAiBubbleInFeed && lastAiBubbleInFeed.innerHTML !== expectedLastAiHtml) {
+        lastAiBubbleInFeed.innerHTML = expectedLastAiHtml;
+      }
+    }
   }
 
+  // 상단 바 정보 동기화
   const room = getVisibleConversationRooms().find((r) => r.id === state.currentRoomId);
   const selected = state.selectedNodeId ? getNodeById(state.selectedNodeId) : null;
   const roomLabel = room
@@ -3825,9 +3871,15 @@ function renderChat() {
   if (el.branchTag) {
     el.branchTag.textContent = selected ? `${roomLabel} / ${selected.title}` : roomLabel;
   }
-  if (selectedBubble) {
+
+  // 💡 [최종 스크롤 고정 연산] block: "center"를 걷어내고 안정적인 자석 하단 스크롤 구현
+  const activeAiBubble = el.chatFeed.querySelector(".bubble.ai.selected");
+  if (state.isSendingMessage) {
+    // 메시지 전송 중일 때는 묻지도 따지지도 않고 스크롤바 바닥 고정
+    el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
+  } else if (activeAiBubble) {
     requestAnimationFrame(() => {
-      selectedBubble.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+      activeAiBubble.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
     });
   } else {
     el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
