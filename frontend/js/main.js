@@ -3823,23 +3823,30 @@ function renderChat() {
   }
 
   const pathNodes = state.selectedNodeId ? getPathToNode(state.selectedNodeId) : [];
+  const visiblePathNodes = pathNodes.filter((node) => {
+    const isSelected = String(node.id) === String(state.selectedNodeId);
+    return !isAutoSubtopicSeedNode(node) || isSelected;
+  });
   const currentBubblesCount = el.chatFeed.querySelectorAll(".bubble").length;
 
   // 현재 화면에 렌더링되어야 할 정답 말풍선 개수 계산
-  const expectedBubblesCount = pathNodes.length === 0 ? 1 : pathNodes.reduce((acc, node) => {
-    if (isAutoSubtopicSeedNode(node) && String(node.id) !== String(state.selectedNodeId)) return acc;
-    return acc + 2; // 유저 버블 + AI 버블
-  }, 0);
+  const expectedBubblesCount = visiblePathNodes.length === 0 ? 1 : visiblePathNodes.length * 2;
+  const chatRenderSignature = visiblePathNodes.length === 0
+    ? "empty"
+    : JSON.stringify(visiblePathNodes.map((node, index) => ({
+      id: String(node.id),
+      parentId: node.parentId == null ? null : String(node.parentId),
+      selected: String(node.id) === String(state.selectedNodeId),
+      userQuestion: String(node.userQuestion || ""),
+      aiAnswer: index === visiblePathNodes.length - 1 ? "" : String(node.aiAnswer || "")
+    })));
 
-  // 💡 [버그 원천 차단] 개수 자체가 변한 게 아니라면 innerHTML을 절대로 지우지 않습니다. (튕김 해소 핵심)
-  if (currentBubblesCount !== expectedBubblesCount) {
+  // 같은 깊이의 형제 노드를 선택하면 말풍선 개수는 같아도 질문/노드 ID가 바뀌므로 다시 그려야 합니다.
+  if (currentBubblesCount !== expectedBubblesCount || el.chatFeed.dataset.renderSignature !== chatRenderSignature) {
     el.chatFeed.innerHTML = "";
     
-    pathNodes.forEach((node) => {
+    visiblePathNodes.forEach((node) => {
       const isSelected = String(node.id) === String(state.selectedNodeId);
-      if (isAutoSubtopicSeedNode(node) && !isSelected) {
-        return;
-      }
       const userBubble = makeBubble("user", node.userQuestion, node.timestamp, node.id, isSelected);
       const aiBubble = makeBubble("ai", node.aiAnswer, node.timestamp + 1000, node.id, isSelected);
       el.chatFeed.appendChild(userBubble);
@@ -3849,6 +3856,7 @@ function renderChat() {
     if (pathNodes.length === 0) {
       el.chatFeed.appendChild(makeBubble("ai", "질문을 입력하면 첫 노드가 생성됩니다.", Date.now()));
     }
+    el.chatFeed.dataset.renderSignature = chatRenderSignature;
   } else {
     // 💡 말풍선 개수가 그대로라면, 기존 DOM 뼈대는 냅두고 마지막 AI 답변 내용물 글자만 실시간 동기화
     const lastPathNode = pathNodes[pathNodes.length - 1];
