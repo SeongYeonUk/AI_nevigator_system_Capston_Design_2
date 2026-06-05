@@ -55,6 +55,7 @@ const state = {
   graphScopeMode: "range",
   focusGraphLayout: "mindmap",
   focusMindmapViewport: null,
+  focusMindmapSubtreeRootId: null,
   graphNodeShape: "circle",
   graphNodeSizeScale: 1,
   graphTreeScale: 1,
@@ -2180,15 +2181,31 @@ function getFocusCytoscapeLayout(positions) {
     positions,
     fit: true,
     padding: 96,
-    animate: true,
-    animationDuration: 260
+    animate: false
   };
 }
 
-function getFocusMindmapData(visibleNodes, isCircleFocus) {
-  const byId = new Map(visibleNodes.map((node) => [String(node.id), node]));
-  const childrenById = new Map(visibleNodes.map((node) => [String(node.id), []]));
-  visibleNodes.forEach((node) => {
+function getFocusMindmapVisibleNodes(nodes) {
+  if (!nodes?.length) {
+    return [];
+  }
+  const subtreeRootId = state.focusMindmapSubtreeRootId == null ? null : String(state.focusMindmapSubtreeRootId);
+  if (!subtreeRootId) {
+    return getZoomScopedGraphNodes(nodes);
+  }
+  const focusRoot = nodes.find((node) => String(node.id) === subtreeRootId);
+  if (!focusRoot) {
+    state.focusMindmapSubtreeRootId = null;
+    return getZoomScopedGraphNodes(nodes);
+  }
+  const depthLimit = state.graphZoom > 1 ? getGraphDescendantDepthLimit() : Infinity;
+  return getDescendantScopedGraphNodes(nodes, subtreeRootId, depthLimit);
+}
+
+function getFocusMindmapData(visibleNodes, isCircleFocus, layoutNodes = visibleNodes) {
+  const byId = new Map(layoutNodes.map((node) => [String(node.id), node]));
+  const childrenById = new Map(layoutNodes.map((node) => [String(node.id), []]));
+  layoutNodes.forEach((node) => {
     const parentId = node.parentId == null ? null : String(node.parentId);
     if (parentId && childrenById.has(parentId)) {
       childrenById.get(parentId).push(node);
@@ -2196,11 +2213,10 @@ function getFocusMindmapData(visibleNodes, isCircleFocus) {
   });
   childrenById.forEach((children) => children.sort(compareTreeNodeOrder));
 
-  const realRoot = visibleNodes.find((node) => node.parentId == null && Number(node.depth) === 0);
-  const selectedRoot = visibleNodes.find((node) => String(node.id) === String(state.selectedNodeId));
-  const root = realRoot || selectedRoot || visibleNodes.find((node) => node.parentId == null) || visibleNodes[0];
+  const realRoot = layoutNodes.find((node) => node.parentId == null && Number(node.depth) === 0);
+  const root = realRoot || layoutNodes.find((node) => node.parentId == null) || layoutNodes[0];
   if (!root) {
-    return { positions: {}, styles: new Map() };
+    return { positions: {}, styles: new Map(), rootId: null, focusId: null };
   }
 
   const rootId = String(root.id);
@@ -2227,7 +2243,7 @@ function getFocusMindmapData(visibleNodes, isCircleFocus) {
 
   const rootChildIds = new Set();
   const rootChildren = [];
-  [...(childrenById.get(rootId) || []), ...visibleNodes.filter((node) => node.parentId == null && String(node.id) !== rootId)].forEach((node) => {
+  [...(childrenById.get(rootId) || []), ...layoutNodes.filter((node) => node.parentId == null && String(node.id) !== rootId)].forEach((node) => {
     const nodeId = String(node.id);
     if (!rootChildIds.has(nodeId)) {
       rootChildIds.add(nodeId);
@@ -2286,7 +2302,9 @@ function getFocusMindmapData(visibleNodes, isCircleFocus) {
   placeSide(rightChildren, 1, 0);
   placeSide(leftChildren, -1, 0);
 
-  return { positions, styles };
+  const focusId = state.focusMindmapSubtreeRootId == null ? null : String(state.focusMindmapSubtreeRootId);
+
+  return { positions, styles, rootId, focusId };
 }
 
 function getCytoscapeDropTarget(cy, sourceId) {
@@ -2320,8 +2338,8 @@ function clearCytoscapeDropState(cy) {
 }
 
 function renderCytoscapeFocusGraph(nodes = state.nodes) {
-  const visibleNodes = getZoomScopedGraphNodes(getVisibleGraphNodes(nodes));
-  const hiddenCountMap = getCollapsedHiddenCountMap(nodes);
+  const visibleNodes = getFocusMindmapVisibleNodes(nodes);
+  const hiddenCountMap = new Map();
   const nodeIds = new Set(visibleNodes.map((node) => String(node.id)));
   const css = getComputedStyle(document.body);
   const accent = css.getPropertyValue("--accent").trim() || "#37c6a5";
@@ -2332,7 +2350,7 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
   const selectedFill = css.getPropertyValue("--node-active-fill").trim() || "#d1f3e8";
   const isCircleFocus = state.graphNodeShape === "circle";
   const renderOptions = getGraphRenderOptions();
-  const mindmap = getFocusMindmapData(visibleNodes, isCircleFocus);
+  const mindmap = getFocusMindmapData(visibleNodes, isCircleFocus, nodes);
 
   const container = document.createElement("div");
   container.className = `cyto-tree-canvas mindmap-layout ${isCircleFocus ? "circle-layout" : "box-layout"}`;
@@ -2373,12 +2391,12 @@ function renderCytoscapeFocusGraph(nodes = state.nodes) {
           ...mindmap.styles.get(String(node.id)),
           selected: String(node.id) === String(state.selectedNodeId),
           important: isImportantNode(node.id),
-          root: node.parentId == null
+          root: String(node.id) === String(mindmap.rootId)
         },
         classes: [
           String(node.id) === String(state.selectedNodeId) ? "selected" : "",
           isImportantNode(node.id) ? "important" : "",
-          node.parentId == null ? "root" : "",
+          String(node.id) === String(mindmap.rootId) ? "root" : "",
           hiddenCount ? "collapsed" : "",
           compact ? "compact" : ""
         ].filter(Boolean).join(" ")
@@ -2555,7 +2573,8 @@ layout: getFocusCytoscapeLayout(mindmap.positions)
     }
     state.focusMindmapViewport = {
       zoom: focusCytoscape.zoom(),
-      pan: focusCytoscape.pan()
+      pan: focusCytoscape.pan(),
+      focusId: mindmap.focusId
     };
   });
 
@@ -2568,6 +2587,8 @@ layout: getFocusCytoscapeLayout(mindmap.positions)
       toggleGraphNodeCollapse(nodeId, nodes);
       return;
     }
+    state.focusMindmapSubtreeRootId = nodeId;
+    state.focusMindmapViewport = null;
     selectNode(nodeId);
   });
 
@@ -2607,7 +2628,7 @@ layout: getFocusCytoscapeLayout(mindmap.positions)
   requestAnimationFrame(() => {
     applyingFocusViewport = true;
     const viewport = state.focusMindmapViewport;
-    if (viewport?.zoom && viewport?.pan) {
+    if (viewport?.zoom && viewport?.pan && String(viewport.focusId || "") === String(mindmap.focusId || "")) {
       focusCytoscape.zoom(clamp(Number(viewport.zoom) || 1, focusCytoscape.minZoom(), focusCytoscape.maxZoom()));
       focusCytoscape.pan({
         x: Number(viewport.pan.x) || 0,
@@ -2615,7 +2636,14 @@ layout: getFocusCytoscapeLayout(mindmap.positions)
       });
     } else {
       focusCytoscape.fit(undefined, 96);
-      focusCytoscape.center();
+      if (mindmap.focusId) {
+        const focusElement = focusCytoscape.getElementById(String(mindmap.focusId));
+        if (focusElement?.length) {
+          focusCytoscape.center(focusElement);
+        }
+      } else {
+        focusCytoscape.center();
+      }
     }
     applyingFocusViewport = false;
   });
@@ -3319,43 +3347,49 @@ function getZoomScopedGraphNodes(nodes = state.nodes) {
   }
 
   const selectedId = String(state.selectedNodeId);
+  return getDescendantScopedGraphNodes(nodes, selectedId, getGraphDescendantDepthLimit());
+}
+
+function getGraphDescendantDepthLimit() {
+  if (state.graphZoom >= 1.4) {
+    return 0;
+  }
+  if (state.graphZoom >= 1.3) {
+    return 1;
+  }
+  if (state.graphZoom >= 1.2) {
+    return 2;
+  }
+  return 3;
+}
+
+function getDescendantScopedGraphNodes(nodes, rootId, maxDepth) {
+  const selectedId = String(rootId);
   if (!nodes.some((node) => String(node.id) === selectedId)) {
     return nodes;
   }
-
-  const radius = state.graphZoom >= 1.4 ? 0 : (state.graphZoom >= 1.3 ? 1 : (state.graphZoom >= 1.2 ? 2 : 3));
-  const neighbors = new Map();
+  const childrenById = new Map(nodes.map((node) => [String(node.id), []]));
   nodes.forEach((node) => {
-    const nodeId = String(node.id);
-    if (!neighbors.has(nodeId)) {
-      neighbors.set(nodeId, new Set());
-    }
-    if (node.parentId != null && nodes.some((entry) => String(entry.id) === String(node.parentId))) {
-      const parentId = String(node.parentId);
-      if (!neighbors.has(parentId)) {
-        neighbors.set(parentId, new Set());
-      }
-      neighbors.get(nodeId).add(parentId);
-      neighbors.get(parentId).add(nodeId);
+    const parentId = node.parentId == null ? null : String(node.parentId);
+    if (parentId && childrenById.has(parentId)) {
+      childrenById.get(parentId).push(String(node.id));
     }
   });
-
   const includedIds = new Set([selectedId]);
-  const queue = [{ id: selectedId, distance: 0 }];
+  const queue = [{ id: selectedId, depth: 0 }];
   while (queue.length) {
     const current = queue.shift();
-    if (current.distance >= radius) {
+    if (current.depth >= maxDepth) {
       continue;
     }
-    (neighbors.get(current.id) || []).forEach((nextId) => {
-      if (includedIds.has(nextId)) {
+    (childrenById.get(current.id) || []).forEach((childId) => {
+      if (includedIds.has(childId)) {
         return;
       }
-      includedIds.add(nextId);
-      queue.push({ id: nextId, distance: current.distance + 1 });
+      includedIds.add(childId);
+      queue.push({ id: childId, depth: current.depth + 1 });
     });
   }
-
   return nodes
     .filter((node) => includedIds.has(String(node.id)))
     .map((node) => ({
@@ -6241,6 +6275,7 @@ function resetGraphZoom() {
   state.graphZoom = 1;
   state.graphScopeMode = "range";
   if (state.treeFocusMode) {
+    state.focusMindmapSubtreeRootId = null;
     state.focusMindmapViewport = null;
   } else {
     state.graphTreeScale = 1;
@@ -6264,7 +6299,8 @@ function changeGraphTreeScale(delta) {
     });
     state.focusMindmapViewport = {
       zoom: focusCytoscape.zoom(),
-      pan: focusCytoscape.pan()
+      pan: focusCytoscape.pan(),
+      focusId: state.focusMindmapSubtreeRootId == null ? null : String(state.focusMindmapSubtreeRootId)
     };
     return;
   }
@@ -6316,6 +6352,7 @@ function setTreeFocusMode(enabled) {
     state.graphResizeMode = false;
     state.focusGraphLayout = "mindmap";
     if (!wasFocusMode) {
+      state.focusMindmapSubtreeRootId = null;
       state.focusMindmapViewport = null;
     }
   }

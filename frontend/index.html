@@ -219,9 +219,9 @@
             <select id="graphZoomSelect" class="zoom-select" aria-label="트리 표시 비율">
               <option value="0.4">40% · 구조만</option>
               <option value="1">100% · 전체</option>
-              <option value="1.1">110% · 주변 3</option>
-              <option value="1.2">120% · 주변 2</option>
-              <option value="1.3">130% · 주변 1</option>
+              <option value="1.1">110% · 하위 3</option>
+              <option value="1.2">120% · 하위 2</option>
+              <option value="1.3">130% · 하위 1</option>
               <option value="1.4">140% · 선택만</option>
               <option value="path">현재 경로만</option>
             </select>
@@ -461,7 +461,7 @@
 
     </div>
   </main>
-  <script type="module" src="js/main.js?v=20260528-chat-full-resize"></script>
+  <script type="module" src="js/main.js?v=20260605-static-descendant-scope"></script>
   <script>
     (function setupAuthViewFallback() {
       function toggleSection(targetView) {
