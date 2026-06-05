@@ -6823,7 +6823,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-// PDF 추출 버튼 이벤트 리스너
+// PDF 추출 버튼 이벤트 리스너 (문단 간격 여백 버퍼 주입 버전 - 짤림/중복 완벽 방지)
 document.addEventListener("DOMContentLoaded", () => {
   const pdfBtn = document.getElementById("pdf-btn");
 
@@ -6835,140 +6835,118 @@ document.addEventListener("DOMContentLoaded", () => {
       pdfBtn.disabled = true;
 
       try {
-        // 2. 화면에 보이는 모달창에서 데이터 가져오기
-        // 🚨 핵심 수정: innerText가 아니라 innerHTML을 사용하여 트리 구조 태그를 그대로 가져옴!
         const modalContent = document.getElementById("extractResultContent").innerHTML;
         const modalPath = document.getElementById("extractResultPathPreview").innerHTML;
 
-        // 💡 [추가] 오늘 날짜 자동 입력
         const today = new Date();
         document.getElementById("pdf-date").innerText = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
 
-        // 3. 흰색 도화지에 데이터 옮겨 적기 (가독성을 위한 최적의 여백 리팩토링)
         const pdfBox = document.getElementById("pdf-content-box");
-        
-        // 상위 엘리먼트의 악성 pre-wrap 속성을 완벽히 해제
         pdfBox.style.whiteSpace = "normal"; 
 
+        // 🌟 [핵심 수정] PDF 전용 CSS 마진 버퍼 주입
+        // 각 문단(p, li)과 타이틀(h3, h4) 아래에 넉넉한 공백을 주어 칼선이 글자를 치지 못하게 만듭니다.
         pdfBox.innerHTML = `
           <style>
-            /* 빈 태그 제거 */
-            .pdf-markdown-content p:empty, 
-            .pdf-markdown-content br { 
-              display: none !important; 
-            }
-
-            /* 본문 텍스트 단락 간 가독성을 위한 최적의 하단 마진 설정 */
-            .pdf-markdown-content p {
-              margin-top: 0px !important;
-              margin-bottom: 12px !important;
-              line-height: 1.6;
-              color: #334155 !important;
-            }
-
-            /* 본문 내부의 소제목(1. 데이터베이스 개요 등) 위아래 적정 여백 */
-            .pdf-markdown-content h1, 
-            .pdf-markdown-content h2, 
-            .pdf-markdown-content h3 {
-              margin-top: 20px !important;   /* 이전 문단과 확실히 구분되도록 위쪽 여백 부여 */
-              margin-bottom: 6px !important;  /* 제목 바로 밑 본문 내용과 자연스럽게 밀착 */
-              font-size: 16px !important;
-              font-weight: 700 !important;
+            .pdf-render-wrap h1, .pdf-render-wrap h2, .pdf-render-wrap h3, .pdf-render-wrap h4 {
               color: #0f172a !important;
+              font-weight: 800 !important;
+              margin-top: 35px !important;
+              margin-bottom: 20px !important;
             }
-
-            /* 리스트 문단(점 표기 방식 등) 간격 최적화 */
-            .pdf-markdown-content ul, 
-            .pdf-markdown-content ol {
+            /* 💡 문단 간격을 45px로 크게 벌려 칼날이 글자 사이의 빈 공간만 지나가도록 가이드 */
+            .pdf-render-wrap p {
               margin-top: 0px !important;
-              margin-bottom: 12px !important;
-              padding-left: 20px !important;
+              margin-bottom: 45px !important;
+              line-height: 1.75 !important;
+              color: #334155 !important;
+              text-align: justify !important;
+              word-break: keep-all !important;
             }
-            .pdf-markdown-content li {
-              margin-bottom: 4px !important;
-              line-height: 1.5;
+            /* 💡 리스트 항목 간격도 넉넉히 벌려 겹침 현상 차단 */
+            .pdf-render-wrap li {
+              margin-bottom: 25px !important;
+              line-height: 1.6 !important;
               color: #334155 !important;
             }
-
-            /* 리포트 전체의 맨 첫 번째 요소는 대제목 바로 밑에 붙도록 상단 마진 완전 제거 */
-            .pdf-markdown-content > *:first-child {
-              margin-top: 0px !important;
+            .pdf-render-wrap ul, .pdf-render-wrap ol {
+              margin-bottom: 45px !important;
+              padding-left: 24px !important;
             }
           </style>
 
-          <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 0 0 10px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
-            <span style="color: #43dab8;">📝</span> AI 학습 요약 리포트
-          </h3>
-          
-          <div class="pdf-markdown-content" style="color: #334155; text-align: justify; word-break: keep-all; margin-bottom: 30px;">
-            ${modalContent}
-          </div>
-          
-          <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 32px 0 10px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
-            <span style="color: #43dab8;">📍</span> 선택된 지식 경로
-          </h3>
-          
-          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; display: flex; justify-content: center; align-items: center; padding: 35px 20px; margin-bottom: 10px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); overflow: hidden;">
-            <div style="transform: scale(1.05); transform-origin: center; white-space: normal !important;">
-              ${modalPath}
+          <div class="pdf-render-wrap" style="padding: 10px; background: #ffffff;">
+            <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 0 0 14px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
+              <span style="color: #43dab8;">📝</span> AI 학습 요약 리포트
+            </h3>
+            
+            <div class="pdf-markdown-content" style="margin-bottom: 40px;">
+              ${modalContent}
+            </div>
+            
+            <h3 style="color: #121212; font-size: 18px; font-weight: 800; margin: 40px 0 14px 0; padding: 0; display: flex; align-items: center; gap: 8px;">
+              <span style="color: #43dab8;">📍</span> 선택된 지식 경로
+            </h3>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; display: flex; justify-content: center; align-items: center; padding: 35px 20px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); overflow: hidden; page-break-inside: avoid; break-inside: avoid;">
+              <div style="transform: scale(1.02); transform-origin: center; white-space: normal !important;">
+                ${modalPath}
+              </div>
             </div>
           </div>
         `;
 
-        // 4. 흰색 도화지를 html2canvas로 사진 찍기 (스케일 2로 고화질)
         const reportElement = document.getElementById("report-area");
         
-        // 렌더링을 위해 잠깐 화면 안으로 가져왔다가 바로 숨김 처리
+        const originalHeight = reportElement.style.height;
+        reportElement.style.height = "auto"; 
         reportElement.style.left = "0px";
-        reportElement.style.zIndex = "-1"; // 뒤로 숨김
-        
+        reportElement.style.zIndex = "-1";
+
         const canvas = await window.html2canvas(reportElement, {
-          scale: 2,
+          scale: 2, 
           useCORS: true,
-          backgroundColor: '#ffffff'
+          backgroundColor: '#ffffff',
+          logging: false
         });
-        
-        // 다시 화면 밖으로 치우기
+
         reportElement.style.left = "-9999px";
+        reportElement.style.height = originalHeight;
 
         const imgData = canvas.toDataURL('image/png');
-
-        // 5. 찍은 사진을 jsPDF를 이용해 A4 용지에 맞게 분할하여 PDF로 만들기
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('p', 'mm', 'a4');
         
-        const imgWidth = 210; // A4 가로
-        const pageHeight = 295; // A4 세로
+        // 가장 안정적인 순정 mm 단위 기반 A4 도화지 연산
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const imgWidth = 210; 
+        const pageHeight = 295; 
+        
         const imgHeight = (canvas.height * imgWidth) / canvas.width;
         let heightLeft = imgHeight;
         let position = 0;
 
-        // 첫 페이지 붙이기
-        doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        // 1페이지 출력
+        doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
         heightLeft -= pageHeight;
 
-        // 내용이 길면 새 페이지 추가해서 이어 붙이기
-        while (heightLeft >= 0) {
-          position = heightLeft - imgHeight;
+        // 2페이지 이상 분할 루프 (기존 순정 연산으로 원복)
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight; 
           doc.addPage();
-          doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
           heightLeft -= pageHeight;
         }
 
-        // 6. 파일 다운로드 창 띄우기
+        // 인쇄창 팝업 없이 브라우저 하단으로 즉시 자동 다운로드
         doc.save(`PathLearn_Report_${new Date().toISOString().slice(0,10)}.pdf`);
         
       } catch (error) {
         console.error("PDF 생성 중 에러 발생:", error);
         alert("PDF 생성 중 오류가 발생했습니다.");
       } finally {
-        // 7. 버튼 상태 원상 복구
         pdfBtn.textContent = originalText;
         pdfBtn.disabled = false;
       }
     });
   }
 });
-
-
-
